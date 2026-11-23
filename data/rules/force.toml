@@ -814,11 +814,11 @@ applies = ["spell:FORCE_POWER_SPEED_BURST", "spell:FORCE_POWER_KNIGHT_SPEED", "s
 
 [speed.scale]
 name = "Speed Bonus"
-value = 1.15
+value = 1.5
 unit = "×"
 range = [1, 3]
 summary = "In combat, every rank of the speed powers makes the Jedi move {force.speed.scale:bare} times as fast."
-source = "the owner's call, over JA's 1.7"
+source = "the owner's request in shadowndacorner/kjk#26 (opened 2026-11-22)"
 see = "sim::world::powers::Cast::upkeep"
 applies = ["spell:FORCE_POWER_SPEED_BURST", "spell:FORCE_POWER_KNIGHT_SPEED", "spell:FORCE_POWER_SPEED_MASTERY"]
 
