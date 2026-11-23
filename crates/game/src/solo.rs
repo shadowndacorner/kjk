@@ -116,6 +116,11 @@ pub struct Solo {
     client_end: Loopback,
     /// The level the client builds when asked (the host's own).
     level: Level,
+    /// The host committed an install whose level its own client was not
+    /// given yet. The client gets it once it has heard of the install. A
+    /// large install message, such as a whole snapshot after a hold, can
+    /// reach the client only after the host committed.
+    level_owed: bool,
     /// The angles of the last command made: a seat with nothing to press
     /// keeps looking there.
     angles: [i16; 3],
@@ -460,6 +465,7 @@ impl Solo {
             client,
             client_end,
             level: level.clone(),
+            level_owed: false,
             angles: [0; 3],
             net,
             address,
@@ -527,6 +533,11 @@ impl Solo {
                     ClientEvent::Explosion(explosion) => self.explosions.push(explosion),
                     _ => {}
                 }
+            }
+            if self.level_owed && self.client.awaits_level() {
+                self.level_owed = false;
+                self.client.provide_level(now, Ok(self.level.clone()));
+                moved = true;
             }
             while let Some(event) = hosted.server.poll_event() {
                 match event {
@@ -796,6 +807,7 @@ impl Solo {
     /// held for a break's end name the old module's objects: dropped.
     pub fn installing(&mut self, request: &session::Request) {
         self.after_break.clear();
+        self.level_owed = false;
         lock(&self.hosted).server.installing(InstallRequest {
             game: request.game.clone(),
             module: request.module.clone(),
@@ -808,6 +820,8 @@ impl Solo {
 
     /// The host committed `level`'s install (`after`): the client commits
     /// the same level itself, and once it has loaded the world resumes.
+    /// The client is given the level once it has heard of the install,
+    /// in this pump or a later one (`level_owed`).
     pub fn installed(&mut self, announcement: Announcement, after: &Snapshot, level: &Level) {
         let now = self.now();
         self.level = level.clone();
@@ -815,8 +829,8 @@ impl Solo {
             .server
             .installed(now, announcement, after);
         self.log_hash(after);
+        self.level_owed = true;
         self.pump();
-        self.client.provide_level(now, Ok(level.clone()));
         // Loaded here; `pump` resumes once the other players are too.
         self.pump();
     }
@@ -865,6 +879,7 @@ impl Solo {
 
     /// The module's plan failed: the world goes on where it stopped.
     pub fn abandon(&mut self) {
+        self.level_owed = false;
         let now = self.now();
         lock(&self.hosted).server.abandon_install(now);
         self.pump();

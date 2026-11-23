@@ -49,7 +49,9 @@
   last save". The host's Load (`ui reload`) loads its own latest save
   (never a copy) in place for every machine (`sim_host::ReloadRequest`,
   `play::from_save`); one that does not read is told over the box; with
-  no save, the menu.
+  no save, the menu. Loading a save in place or from the menu does not
+  itself schedule an autosave. Entering a module still does, and explicit
+  scripted autosave requests keep their behavior (`sim_host::autosave`).
 - **Control**: when the body the first seat leads through goes down, the
   next standing party member in the leader key's order leads
   (`world::scripts::passes_on`, as Tab would), past a companion a guest
