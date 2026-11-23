@@ -146,9 +146,6 @@ pub(crate) enum Progress {
 struct Flow {
     job: Option<Mutex<Receiver<Progress>>>,
     launch: bool,
-    /// The session being prepared restores a save's story
-    /// (`sim_host::FromStory` once it is in).
-    restoring: bool,
     /// A save's story offered (`story_restore`), its question the
     /// session's error until the box closes.
     asking: bool,
@@ -571,7 +568,6 @@ fn start(
             }
             Intent::Session(session) if flow.job.is_none() => {
                 info!(target: "session", ?session, "starting");
-                flow.restoring = matches!(session, SessionIntent::Restore { .. });
                 // A guest keeps what the host gives: nothing made here.
                 made.0 = match &session {
                     SessionIntent::Solo { character, .. }
@@ -661,14 +657,10 @@ fn finish(world: &mut World) {
         return;
     };
     let launch = std::mem::take(&mut world.resource_mut::<Flow>().launch);
-    let restoring = std::mem::take(&mut world.resource_mut::<Flow>().restoring);
     world.resource_mut::<Flow>().job = None;
     match result.and_then(|loaded| install(world, loaded)) {
         Ok(()) => {
             world.resource_mut::<console::Hold>().0 = false;
-            if restoring {
-                world.insert_resource(crate::sim_host::FromStory);
-            }
         }
         Err(why) if launch => {
             // The run was for this session: it ends, saying why, as when it
@@ -714,6 +706,7 @@ fn finish(world: &mut World) {
 /// A prepared session put into the world the play plugins wait in.
 fn install(world: &mut World, loaded: play::Loaded) -> Result<(), String> {
     let play::Loaded {
+        from_save,
         scene,
         sim,
         view,
@@ -749,5 +742,10 @@ fn install(world: &mut World, loaded: play::Loaded) -> Result<(), String> {
     crate::hud::install(world, hud);
     world.resource_mut::<Ui>().stack.clear();
     crate::lifecycle_view::hand_over(world);
+    if from_save {
+        world.insert_resource(crate::sim_host::FromSave);
+    } else {
+        world.remove_resource::<crate::sim_host::FromSave>();
+    }
     Ok(())
 }

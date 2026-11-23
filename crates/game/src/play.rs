@@ -112,6 +112,9 @@ pub struct Options<'a> {
 /// Everything a play run needs: the scene to draw, the sim to host, the
 /// view's rig, and the fight's and the powers' effects.
 pub struct Loaded {
+    /// The world came from a save or its story, so loading it owes no
+    /// initial autosave.
+    pub(crate) from_save: bool,
     pub scene: LoadedScene,
     pub sim: SimSetup,
     pub view: PlayViewSetup,
@@ -751,12 +754,12 @@ pub fn load_for(
         Ok(resolver) => weapons::sheet_models(resolver, &mut cache, &options.sheet, &[None, None]),
         Err(_) => Ok([None, None]),
     })?;
-    let (mut world, first) = match (replay, saved, options.story) {
+    let (mut world, first, from_save) = match (replay, saved, options.story) {
         (Some(recording), ..) => {
             let mut world = sim::SimWorld::from_snapshot(&recording.start, stage.level.clone())
                 .map_err(|error| error.to_string())?;
             world.set_script_state(recording.script.clone());
-            (world, None)
+            (world, None, false)
         }
         (None, Some((save, ..)), _) => {
             let made = from_save(save, &stage.level, seats, None);
@@ -764,7 +767,7 @@ pub fn load_for(
                 inexact(why);
             }
             let (world, first) = made?;
-            (world, Some(first))
+            (world, Some(first), true)
         }
         (None, None, Some(story)) => {
             let search = stage
@@ -772,7 +775,7 @@ pub fn load_for(
                 .as_deref()
                 .map(crate::lifecycle::ItemSearch::new);
             let (world, first) = from_story(story, &stage.level, seats, search.as_ref())?;
-            (world, Some(first))
+            (world, Some(first), true)
         }
         (None, None, None) => {
             let (world, first) = stage.world(1)?;
@@ -847,7 +850,7 @@ pub fn load_for(
             if let Some(talk) = options.talk.as_ref().filter(|_| talk_later) {
                 crate::by_hand::talk_to(&mut world, talk, options.at)?;
             }
-            (world, first)
+            (world, first, false)
         }
     };
     let bodies_started = std::time::Instant::now();
@@ -1010,6 +1013,7 @@ pub fn load_for(
     });
     crate::launch_times::mark("loaded");
     Ok(Loaded {
+        from_save,
         scene,
         sim,
         view,
