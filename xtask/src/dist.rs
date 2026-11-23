@@ -90,6 +90,12 @@ before it is written, and the save as it was is kept beside it
 
 Movies need ffmpeg on the PATH; without it they are skipped.
 
+Updates: kjk-update.py installs published stable or development builds into
+separate managed folders. It needs Python 3.10 or newer; run
+    python kjk-update.py --help
+for its commands. See docs/UPDATES.md in the source repository for setup,
+isolated profiles and rollback. The updater never changes your game installs.
+
 Co-op: friends join by the host's address, as on a LAN; over the internet
 the host forwards UDP port 29170.
 ";
@@ -195,7 +201,14 @@ pub fn run(args: &[String]) -> Result<(), String> {
             let build = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
                 .current_dir(&root)
                 .env("CARGO_ENCODED_RUSTFLAGS", flags.join("\u{1f}"))
-                .args(["build", "--profile", "dist", "-p", program.package])
+                .args([
+                    "build",
+                    "--locked",
+                    "--profile",
+                    "dist",
+                    "-p",
+                    program.package,
+                ])
                 .arg("--target-dir")
                 .arg(build_dir(&root, &program))
                 .args(features)
@@ -265,6 +278,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
         None => format!("{PLAYERS_README}{LEGAL_README}"),
     };
     write(&stage.join("README.txt"), &readme)?;
+    copy(
+        &root.join("tools/kjk-update.py"),
+        &stage.join("kjk-update.py"),
+    )?;
     copy(&root.join("LICENSE"), &stage.join("LICENSE.txt"))?;
     copy(&root.join("NOTICE"), &stage.join("NOTICE.txt"))?;
     for ((program, _), (mut writing, page)) in programs.into_iter().zip(licences) {
@@ -534,6 +551,25 @@ fn build_dir(root: &Path, program: &Program) -> PathBuf {
 /// The version: the last release tag (`v…`) and the commits since (`git
 /// describe`), else the commit.
 fn version() -> Result<String, String> {
+    match std::env::var("KJK_RELEASE_TAG") {
+        Ok(tag) => {
+            if tag.is_empty()
+                || tag.len() > 128
+                || !tag.as_bytes()[0].is_ascii_alphanumeric()
+                || !tag
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c))
+            {
+                return Err(
+                    "KJK_RELEASE_TAG must be a safe release tag of at most 128 ASCII characters"
+                        .to_string(),
+                );
+            }
+            return Ok(tag);
+        }
+        Err(std::env::VarError::NotPresent) => {}
+        Err(error) => return Err(format!("KJK_RELEASE_TAG: {error}")),
+    }
     let described = git(&["describe", "--tags", "--match", "v*", "--always", "--dirty"])?;
     Ok(String::from_utf8_lossy(&described).trim().to_string())
 }

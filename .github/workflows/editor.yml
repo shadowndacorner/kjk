@@ -9,7 +9,7 @@ name: editor
 # checked here. No installs on the runner: the probes needing one skip.
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
     paths:
       - "crates/edit/**"
       - "crates/save_editor/**"

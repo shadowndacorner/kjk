@@ -169,14 +169,29 @@ x86-64).
 
 ## CI
 
-`ci.yml` runs on pushes to main and on pull requests (not when only `docs/`
-or `*.md` files change): Linux only, two jobs side by side (tests:
-publish-check, licences (`cargo deny`), fmt, the approved tests; clippy: both lints), and on main,
-beside them, `kjk` built and started with `--help`, and again with DLSS
-(`--no-default-features --features dlss`, as the releases build it). Only main saves the
-build caches. clippy's `--all-features` takes in `dlss`, so it checks out
-NVIDIA's SDK and the Vulkan headers (`.github/actions/dlss-sdk`: the files
-a build uses, cached by their tags).
-Windows/macOS builds and the screenshot runs are `manual.yml`: Actions →
-manual → Run workflow, with a checkbox for each. It also runs on the 1st of each month
-with the approved tests alone on Windows and macOS (the sim's hash).
+`ci.yml` runs on every pull request, including drafts and documentation-only
+changes, pushes to main and develop, and every tag. Release tags (`v*` and
+`dev-*`) call the same workflow through `release.yml`; other tags run it
+directly. Closing a pull request cancels its unfinished checks.
+
+Windows x86-64 and Linux x86-64 each run the existing approved tests and build
+the player (`cargo build --locked -p launcher --no-default-features`), then
+start it with `--help` and `--version`. No game installs are needed: scenarios
+that require them report their skipped portions. These checks do not establish
+gameplay, graphics or handheld compatibility. The release helper and update
+script also start with `--help` on both platforms.
+
+Linux also runs publish-check, licences (`cargo deny`), fmt, all-feature clippy
+and no-default-feature clippy. Main retains the extra default-feature/Steam
+build and the linked DLSS build. clippy's `--all-features` takes in `dlss`, so
+it checks out NVIDIA's SDK and Vulkan headers (`.github/actions/dlss-sdk`).
+Only main/develop branch pushes save build caches; pull requests and tags
+read available caches. Tags can read the default branch's caches, but cannot
+assume they can read develop's cache or another tag's cache.
+
+`manual.yml` retains optional Windows/macOS lint and tests and three-platform
+screenshot runs: Actions → manual → Run workflow. It also runs the approved
+tests on Windows and macOS on the first of each month. `editor.yml` retains
+its separate editor-specific checks when relevant files change, including on
+develop pushes. Distribution packages, exact version stamping and the updater
+are described in [`RELEASE.md`](RELEASE.md) and [`UPDATES.md`](UPDATES.md).

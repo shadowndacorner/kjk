@@ -420,9 +420,15 @@ cargo test --release -p approved_tests -- --nocapture   # with the measured numb
 cargo test -p approved_tests --features rig timeline_jolt_ceilings   # the rig too
 cargo test -p approved_tests --features rig weapon_holdings
 ```
-CI (`ci.yml`, Linux, pushes to main and pull requests) runs them after
-publish-check, the licence check (`cargo deny`) and fmt, with clippy in a job beside them; `manual.yml` runs
-them on Windows and macOS on the 1st of each month and when started by hand.
+CI (`ci.yml`) runs the existing suite on Windows and Linux for every pull
+request, every tag and main/develop pushes. Release tags call this same gate
+from `release.yml` before publication; a malformed release tag still gets its
+CI checks. Linux also runs publish-check, licences (`cargo deny`), fmt and
+clippy. Both platforms build and start the player with `--help` and
+`--version`, without game installs. Portions needing an install or the `rig`
+or `editor` features remain skipped; a green run is not a gameplay or hardware
+playtest. `manual.yml` keeps Windows/macOS tests on the first of each month
+and optional runs by hand; release packaging keeps macOS's determinism gate.
 
 ## Re-pinning
 - The sim hash, when the sim changes on purpose (docs/SIM.md): never by

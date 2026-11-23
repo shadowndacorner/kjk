@@ -5,9 +5,9 @@ package and the first-run setup are in; a gamepad scheme for play,
 autosave, GOG's registry and runs on Linux and the Steam Deck are not
 (below, "Not yet").
 
-No game data is ever packaged: a release is the `kjk` program, a readme
-and the licences. The player's own installs are found or chosen on the
-first start and only ever read.
+No game data is ever packaged: a release contains `kjk`, its save editor,
+the update script, a readme and the licences. The player's own installs are
+found or chosen on the first start and only ever read.
 
 ## The player's build
 
@@ -31,13 +31,23 @@ as Valve's test app 480), so Steam co-op is for builds made from source
 
 | OS | package | inside |
 |---|---|---|
-| Windows | `kjk-<version>-windows-<arch>.zip` | `kjk.exe`, `README.txt`, `LICENSE.txt`, `NOTICE.txt`, `THIRD-PARTY-LICENSES.html` |
-| macOS | `kjk-<version>-macos-<arch>.tar.gz` | `kjk.app` (the program in `Contents/MacOS`), the same texts |
-| Linux, Steam Deck | `kjk-<version>-linux-<arch>.tar.gz` | `kjk`, the same texts |
+| Windows | `kjk-<version>-windows-<arch>.zip` | `kjk.exe`, `kjk-save-editor.exe`, update script and texts below |
+| macOS | `kjk-<version>-macos-<arch>.tar.gz` | `kjk.app`, `kjk Save Editor.app`, update script and texts below |
+| Linux, Steam Deck | `kjk-<version>-linux-<arch>.tar.gz` | `kjk`, `kjk-save-editor`, update script and texts below |
 
-`<version>` is `git describe --tags --match 'v*' --always --dirty`. Each OS packs its
-own: a Windows package is made on Windows, a macOS one on a Mac (both
-architectures need a build each), a Linux one on Linux.
+Every archive also contains `kjk-update.py`, `README.txt`, `LICENSE.txt`,
+`NOTICE.txt`, `THIRD-PARTY-LICENSES.html` and
+`THIRD-PARTY-LICENSES-save-editor.html`. The updater supports Windows and
+Linux and needs Python 3.10 or newer; its setup and channel choices are in
+[`UPDATES.md`](UPDATES.md). The macOS package keeps the same script for
+consistent contents, but the updater does not install macOS builds.
+
+CI sets `KJK_RELEASE_TAG` to the exact verified tag. The package name, game
+menu, launcher version, editor and saved build metadata all carry that
+version. A local build without the variable keeps the existing behavior:
+package names use `git describe --tags --match 'v*' --always --dirty`, and
+the binary's version is its nearest `v*` tag. Each OS packs its own:
+Windows on Windows, macOS on a Mac, and Linux on Linux.
 
 ### DLSS in a Windows or Linux package
 
@@ -166,72 +176,93 @@ kjk saves check --mute                                    # the whole corpus
 
 ### Releases from CI
 
-`.github/workflows/release.yml` runs on a `v…` tag, which only the owner
-pushes: it makes the packages, checks each holds the program, the
-readme and the three licence texts (and on macOS the plist and icon)
-and that its `kjk --help` runs, then puts them on a **draft** Release with
-`SHA256SUMS`; the owner reviews it and publishes. Run by hand (Actions →
-release → Run workflow) it makes the packages as the run's artifacts and
-no Release. Each package is built on its own runner: macOS on Apple
-silicon, Windows and Linux on x86-64 (Ubuntu 22.04's glibc).
+The release workflow has two automatic channels:
 
-The sim determinism test runs on each OS in a job of its own, beside the
-package's build. The draft leaves out the package of an OS whose test did
-not pass. `cargo xtask dist` builds `kjk` and the save editor at once (the
-editor in `target/editor`) and writes the licence pages meanwhile. The
-builds read the dependencies from a rust cache. A tag's run cannot save a
-cache that a later tag could read, so the workflow also runs on main when
-`Cargo.lock`, `rust-toolchain.toml` or `release.yml` change, and saves the
-caches then. That run makes no Release.
+| Tag | Source commit | Release behavior |
+|---|---|---|
+| `vMAJOR.MINOR.PATCH` | reachable from `origin/main`, with no pending `bumps/*.toml` | Draft full Release; the owner completes the save-corpus review above and publishes |
+| `dev-<identifier>` | reachable from `origin/develop` | Published prerelease after the required gates, explicitly never Latest |
+| `vMAJOR.MINOR.PATCH-<suffix>` | reachable from main or develop | Draft prerelease; records main when reachable from both |
 
-#### Pre-releases
+The development identifier and candidate suffix start with an ASCII letter
+or digit and contain only ASCII letters, digits, dots, underscores and
+hyphens. Release tags have at most 128 characters. Examples are
+`dev-20261123.1` and `v0.20.0-rc.1`. A tag starts the workflow from the commit
+it names, so these workflows must first reach the relevant branch before a
+new tag can use them. Tagging an older commit with an older workflow does
+not retrofit its automation.
 
-A build for testers, from any branch, goes on a **pre-release**: GitHub
-marks it as one and never as the Latest release, so a player who goes to
-the Releases page still finds the last real one. There are two ways:
+The workflow resolves annotated and lightweight tags to the exact checked-out
+commit, verifies that the remote tag still names it, and checks ordinary
+ancestry with `git merge-base --is-ancestor`. It does not require today's
+branch tip: historical branch commits can be tagged and rerun. The tag and
+branch checks run again immediately before publication. Branch names in
+`push` filters alone would not prove a tag's ancestry. Stable tags require
+pending bumps to have been pinned through the existing process in
+[`../bumps/README.md`](../bumps/README.md); this workflow never edits format
+versions or the sim hash.
 
-- **From a branch, as it is**: Actions → release → Run workflow, pick the
-  branch, tick **pre-release**. The packages are named by `git describe`
-  as always (`kjk-v0.13.0-17-gabc1234-windows-x86_64.zip`), and the draft
-  is titled `kjk v0.13.0-17-gabc1234 (<branch>)`. Its tag,
-  `pre-<branch>-v0.13.0-17-gabc1234` (`/` and other odd characters in
-  the branch's name made `-`), is made at the run's commit when the draft
-  is published. It never starts with `v`, so `git describe --match 'v*'`
-  never names a later build after it. Running it again on the same commit fails while that draft or
-  pre-release is there: delete the draft (it has no tag yet) first.
-- **A version's candidate**: a `v…` tag with a suffix (`v0.14.0-rc.1`,
-  `v0.14.0-beta.2`), pushed by the owner like any release tag, on any
-  branch. It is drafted as a pre-release; the app's version is still the
-  numbers (0.14.0).
+Every tag runs the same no-content CI gate as every pull request: the existing
+approved suite and a player build/startup on Windows and Linux, plus the
+Linux source and license checks (`BUILD.md`). `release.yml` calls `ci.yml`
+directly for release tags, so publication depends on those results. A malformed
+release tag is refused for packaging while its CI still runs.
 
-Either way it is a draft that the owner reviews and publishes, as a
-release is. Publishing it announces it on Discord, its title marked
-"(pre-release)", but does **not** upload it to Nexus: the page's files
-are the players' releases (`nexus-release.yml` skips a pre-release; run
-it by hand with the tag to upload one anyway). A pre-release skips
-"Before the tag": its saves are not checked against earlier releases'.
+The packages use `cargo xtask dist`, with locked builds, on Windows x86-64,
+Linux x86-64 (Ubuntu 22.04), and macOS arm64. Each completed archive is extracted
+into a fresh temporary directory. Its exact program, updater and license
+contents are checked; links, extra paths and duplicate paths are refused;
+both programs run with `--help`; `kjk --version` must identify the exact tag
+and commit. macOS also checks its plists and ad-hoc signatures.
 
-Each package job also attests its package (`actions/attest-build-provenance`):
-a Sigstore-signed record, kept in the public transparency log, that the
-file with this SHA-256 was built by `release.yml` in this repository at
-this commit and ref. Anyone checks a download with
-`gh attestation verify kjk-<tag>-<os>.tar.gz --repo kjk-engine/kjk`; a
-package rebuilt elsewhere, or changed by one byte, fails. It proves where
-a package was built, not that the commit is safe. A package built on a Mac
-by hand has no attestation; one from a re-run job does.
+Both Windows and Linux packages and their full CI gate are required before
+any Release is created. macOS remains optional because its hosted runner may
+be unavailable. Its package is included only when its build and determinism
+check pass; otherwise the notes name its absence. The workflow keeps package
+artifacts even when release creation is blocked. It never replaces an existing
+Release or its assets on a rerun, including published development builds.
+Delete an unwanted draft manually before rerunning; use a new tag for another
+published build.
 
-The draft is made with the packages that built: GitHub's macOS arm64
-runners are at times not given at all (the job is cancelled after about 15
-minutes, "not acquired by Runner of type hosted even after multiple
-attempts"), and one OS missing does not hold back the others. The draft's
-notes name the missing build. To add it later, re-run the failed job
-(Actions → the run → Re-run failed jobs) and upload its artifact, or build
-it on a Mac at the tag (`cargo xtask dist`), then `gh release upload <tag>
-target/packages/kjk-<tag>-macos-aarch64.tar.gz` and add its line to
-`SHA256SUMS`. A package added after publishing reaches Nexus with
-nexus release → Run workflow and the tag.
+Each Release has `SHA256SUMS` and `kjk-release.json`. The manifest records the
+repository, channel, source branch, exact tag and commit, and each available
+archive's platform, name, size and SHA-256. It follows
+`tools/release-manifest.schema.json`; `version` equals `tag`. Checksums cover
+the archives and manifest. The Windows/Linux updater selects only published
+Releases whose metadata matches its selected channel and branch, then checks
+the archive's bytes (`UPDATES.md`). A checksum checks integrity against that
+metadata; it is not independent signature verification.
 
-Publishing the draft announces it in the Discord server's #releases
+Each downloaded archive also retains the existing build provenance attestation
+(`actions/attest-build-provenance`), identifying the repository, workflow,
+commit and archive hash. Check it with
+`gh attestation verify <archive> --repo <owner>/<repository>`. It proves build
+origin, not that the code or gameplay is correct. A package built by hand has
+no workflow attestation.
+
+Main and develop pushes prewarm package caches when the lockfile, toolchain
+or delivery workflow changes; those runs create no Release. Tags read caches
+available to their ref and the default branch, not automatically develop's
+cache or another tag's cache.
+
+#### Manual builds and pre-releases
+
+Actions → release → Run workflow still builds packages from the chosen branch
+as workflow artifacts, without a Release by default. Tick **pre-release** to
+create a draft prerelease for owner review. Its explicit package/version tag is
+`pre-<branch>-<git describe>`: unsafe branch-name characters become hyphens and
+very long names are shortened to fit the tag limit. The Release targets the
+run's exact commit. Existing drafts are refused rather than overwritten.
+
+Manual and candidate prereleases use the `dev` manifest channel and record
+their actual verified source branch. They are excluded from the updater's
+default develop selection, which requires both branch `develop` and `dev-*`.
+Select an experimental branch and tag pattern explicitly to use one. A
+prerelease skips the stable save-corpus review and must not be treated as
+proof that older saves are compatible. Prereleases are neither announced by
+`discord-release.yml` nor uploaded by the automatic Nexus release event.
+
+Publishing a stable draft announces it in the Discord server's #releases
 channel (`.github/workflows/discord-release.yml`, the message in
 `.github/discord-release.jq`): the repository secret
 `DISCORD_RELEASES_WEBHOOK` holds the channel's webhook, and the variable
@@ -241,7 +272,7 @@ channel (`.github/workflows/discord-release.yml`, the message in
 `context/discord-progress-webhook`; larger files are shrunk to Discord's
 20 MB, `--dry-run` sends nothing).
 
-Publishing it also puts the packages on the Nexus Mods page,
+Publishing a stable release also puts the packages on the Nexus Mods page,
 nexusmods.com/kotor/mods/1911 (`.github/workflows/nexus-release.yml`,
 the calls in `.github/nexus-upload.sh`): the repository secret
 `NEXUS_API_KEY` holds the owner's key (nexusmods.com/settings/api-keys);

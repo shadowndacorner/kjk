@@ -1,35 +1,26 @@
 name: ci
 
-# Pushes to main and pull requests: Linux only. Windows and macOS and the
-# screenshot runs are in manual.yml, started by hand from the Actions tab.
-# The repo is on GitHub's free plan, whose monthly minutes are few (Windows
-# costs double, macOS ten times): docs-only changes do not run CI, a newer
-# push cancels the run it overtakes, and so does a pull request's closing
-# (merged or not), whose own run skips every job. Only main saves the
-# rust caches; a pull request reads main's and never leaves its own behind.
-# Only the build job links Bevy, and it runs on main alone: clippy checks
-# every crate without code generation, and the approved tests build the sim,
-# collision and net alone (docs/TESTS.md).
+# Release tags call this same gate from release.yml. Other tags and every
+# pull request, including drafts and documentation changes, run it here.
 on:
   push:
-    branches: [main]
-    paths-ignore:
-      - "docs/**"
-      - "*.md"
+    branches: [main, develop]
+    tags: ["**", "!v*", "!dev-*"]
   pull_request:
     types: [opened, synchronize, reopened, closed]
-    paths-ignore:
-      - "docs/**"
-      - "*.md"
   # pin.yml starts it on its `pin` branch, whose pull request starts none.
   workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
 
 # A merged pull request's closing run has main as its ref: keyed on the
 # event and the pull request's branch, it cancels that pull request's runs
 # and not the push to main beside it.
 concurrency:
-  group: ci-${{ github.event_name }}-${{ github.head_ref || github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -47,9 +38,13 @@ jobs:
   # request could merge. Their rust caches are their own (the job is in
   # the key).
   tests:
-    name: tests (ubuntu-latest)
+    name: tests (${{ matrix.os }})
     if: github.event.action != 'closed'
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -62,29 +57,33 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') }}
 
       - name: publish-check
+        if: runner.os == 'Linux'
         run: cargo xtask publish-check
 
       # Every dependency's licence on deny.toml's list, from crates.io only.
       - name: licences
+        if: runner.os == 'Linux'
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check licenses bans sources
 
       - name: fmt
+        if: runner.os == 'Linux'
         run: cargo fmt --all -- --check
 
       # The sound device probes build the audio crate, whose sound output
       # links ALSA on Linux.
       - name: Linux packages
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y pkg-config libasound2-dev
 
       # Determinism, collision probes, movement measures, the network, the
       # sound device's stream; no Bevy.
       - name: approved tests
-        run: cargo test --release -p approved_tests
+        run: cargo test --release --locked -p approved_tests
 
   clippy:
     name: clippy (ubuntu-latest)
@@ -101,7 +100,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') }}
 
       # Bevy's window crates want these to type-check; the sound device
       # (cpal) wants ALSA's.
@@ -116,20 +115,25 @@ jobs:
       # The save editor's window (`save_editor`, eframe) is linted in
       # editor.yml alone, so the engine's runs never build it.
       - name: clippy
-        run: cargo clippy --workspace --exclude save_editor --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --workspace --exclude save_editor --all-targets --all-features -- -D warnings
 
       # The game without the verbs that check and measure and the layers'
       # probes (the `probes` feature, on by default).
       - name: clippy (no probes)
-        run: cargo clippy -p launcher --all-targets --no-default-features -- -D warnings
+        run: cargo clippy --locked -p launcher --all-targets --no-default-features -- -D warnings
 
-  # kjk itself (the launcher, which links Bevy), so a change that only
-  # breaks the link or the binary is caught; it starts and prints its help.
-  # On main alone: a Bevy build costs ~20 minutes cold.
+  # Link and start the player's feature set on both release platforms.
   build:
-    name: build kjk (ubuntu-latest)
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
+    name: build kjk (${{ matrix.os }})
+    if: github.event.action != 'closed'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
         with:
@@ -141,16 +145,31 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: build
+          key: build-player
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') }}
 
       - name: Linux packages
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y pkg-config libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev
 
       - name: build
-        run: cargo build -p launcher
+        run: cargo build --locked -p launcher --no-default-features
 
-      - name: kjk --help
-        run: ./target/debug/kjk --help
+      - name: kjk startup
+        run: |
+          ./target/debug/kjk --help
+          ./target/debug/kjk --version
+
+      - name: delivery tools startup
+        run: |
+          python -B .github/release.py --help
+          python -B tools/kjk-update.py --help
+
+      - name: default features and Steam
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && runner.os == 'Linux'
+        run: |
+          cargo build --locked -p launcher
+          ./target/debug/kjk --help
 
   # kjk as `cargo xtask dist --dlss` builds it, with DLSS (the `dlss`
   # feature, NVIDIA's static library linked in), beside `build` so it adds
@@ -159,7 +178,7 @@ jobs:
   # (`--all-features`); the link, on main alone, as `build`'s.
   dlss:
     name: build kjk with DLSS (ubuntu-latest)
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -173,6 +192,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: dlss
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Linux packages
         run: sudo apt-get update && sudo apt-get install -y pkg-config libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev
@@ -181,7 +201,7 @@ jobs:
         uses: ./.github/actions/dlss-sdk
 
       - name: build
-        run: cargo build -p launcher --no-default-features --features dlss
+        run: cargo build --locked -p launcher --no-default-features --features dlss
 
       - name: kjk --help
         run: ./target/debug/kjk --help
