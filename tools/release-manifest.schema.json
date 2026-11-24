@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "KJK published release manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "repository", "channel", "branch", "tag", "commit", "version", "assets"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "repository": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
+    "channel": { "enum": ["stable", "dev"] },
+    "branch": { "type": "string", "minLength": 1, "maxLength": 255 },
+    "tag": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+    "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "version": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+    "assets": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 3,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["platform", "name", "sha256", "size"],
+        "properties": {
+          "platform": { "enum": ["windows-x86_64", "linux-x86_64", "macos-aarch64"] },
+          "name": { "type": "string", "pattern": "^kjk-[A-Za-z0-9._-]+-(windows-x86_64\\.zip|linux-x86_64\\.tar\\.gz|macos-aarch64\\.tar\\.gz)$" },
+          "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+          "size": { "type": "integer", "minimum": 1 }
+        }
+      },
+      "allOf": [
+        { "contains": { "properties": { "platform": { "const": "windows-x86_64" } }, "required": ["platform"] }, "minContains": 1, "maxContains": 1 },
+        { "contains": { "properties": { "platform": { "const": "linux-x86_64" } }, "required": ["platform"] }, "minContains": 1, "maxContains": 1 }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "channel": { "const": "stable" } } },
+      "then": { "properties": { "branch": { "const": "main" }, "tag": { "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$" } } }
+    }
+  ],
+  "description": "Asset name must equal kjk-<version>-<platform> with its platform suffix. Names and platforms must each be unique. Version must equal tag for newly published manifests. Consumers must additionally match repository, tag, branch and channel to their selected GitHub release, reject drafts, and require prerelease for dev. The archive has exactly one root derived from its filename."
+}

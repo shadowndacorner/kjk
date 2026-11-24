@@ -1,30 +1,15 @@
-# The player's packages (docs/RELEASE.md). A `v*` tag, which only the owner
-# pushes, builds and attests them (build provenance) and puts them on a
-# draft Release with SHA256SUMS; the
-# owner reviews the draft and publishes it; a tag with a suffix
-# (`v0.14.0-rc.1`) is drafted as a pre-release. Run by hand, it builds the
-# same packages as the run's artifacts and makes no Release, unless
-# "pre-release" is ticked: then the branch it ran on gets a draft
-# pre-release, tagged `pre-<branch>-<git describe>` when published.
-#
-# One package for each OS: macOS on Apple silicon (no Intel build), Windows
-# and Linux on x86-64 (Linux on Ubuntu 22.04's older glibc, so it runs on
-# newer systems and the Steam Deck too). Nothing is signed (the
-# owner's call; the player's readme says how to open the app).
 name: release
 
 on:
   push:
-    tags: ["v*"]
-    # A tag's run reads the rust caches that main saved and cannot save one
-    # that a later tag could read (GitHub keeps a tag's caches to that tag).
-    # So main builds the packages again when the dependencies or the
-    # compiler change, and saves the caches then.
-    branches: [main]
+    tags: ["v*", "dev-*"]
+    branches: [main, develop]
     paths:
       - Cargo.lock
       - rust-toolchain.toml
       - .github/workflows/release.yml
+      - .github/workflows/ci.yml
+      - .github/release.py
   workflow_dispatch:
     inputs:
       prerelease:
@@ -40,15 +25,41 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # Each job builds once: the release profile's incremental cache
-  # (Cargo.toml) would only slow the sim's test.
   CARGO_INCREMENTAL: 0
+  DRAFT_PRERELEASE: ${{ inputs.prerelease }}
 
 jobs:
+  context:
+    name: release provenance
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.context.outputs.tag }}
+      commit: ${{ steps.context.outputs.commit }}
+      publication: ${{ steps.context.outputs.publication }}
+      prerelease: ${{ steps.context.outputs.prerelease }}
+      tagged: ${{ steps.context.outputs.tagged }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: verify source and classify release
+        id: context
+        run: python .github/release.py prepare --output release-context.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-context
+          path: release-context.json
+          if-no-files-found: error
+
+  # This also runs for malformed release tags: every tagged commit is checked.
+  checks:
+    if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/ci.yml
+
   package:
-    name: package (${{ matrix.name }})
+    name: package (${{ matrix.platform }})
+    needs: context
     runs-on: ${{ matrix.runner }}
-    # The attestation's signing identity and its store.
     permissions:
       contents: read
       id-token: write
@@ -56,118 +67,63 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: &systems
-          # No package has DLSS yet. NVIDIA's licence asks for its written
-          # approval of its marks before a release shows them, and that
-          # approval has not been given (docs/RELEASE.md). To ship DLSS,
-          # give the Windows and Linux lines `dist: --dlss`. That packs
-          # NVIDIA's library and notices beside kjk. macOS has no DLSS.
-          - { name: macOS arm64, runner: macos-15, artifact: macos-arm64, dist: "" }
-          - { name: Windows x86-64, runner: windows-latest, artifact: windows-x86_64, dist: "" }
-          - { name: Linux x86-64, runner: ubuntu-22.04, artifact: linux-x86_64, dist: "" }
+        include:
+          - { platform: macos-aarch64, runner: macos-15, artifact: macos-arm64, dist: "" }
+          - { platform: windows-x86_64, runner: windows-latest, artifact: windows-x86_64, dist: "" }
+          - { platform: linux-x86_64, runner: ubuntu-22.04, artifact: linux-x86_64, dist: "" }
     defaults:
       run:
         shell: bash
+    env:
+      KJK_RELEASE_TAG: ${{ needs.context.outputs.tag }}
+      BUILD_COMMIT: ${{ needs.context.outputs.commit }}
+      PLATFORM: ${{ matrix.platform }}
+      DIST: ${{ matrix.dist }}
     steps:
       - uses: actions/checkout@v4
         with:
-          # `git describe` names the package by the tag.
+          ref: ${{ needs.context.outputs.commit }}
           fetch-depth: 0
-
-      # rust-toolchain.toml pins the version; this installs it.
       - name: Toolchain
         run: rustup toolchain install
-
-      # Bevy's window crates and the sound device (cpal) link these;
-      # pdftotext (poppler-utils) reads NVIDIA's notices out of its guide.
       - name: Linux packages
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y pkg-config libwayland-dev libxkbcommon-dev libasound2-dev libudev-dev poppler-utils
-
       - name: DLSS SDK
         if: matrix.dist == '--dlss'
         uses: ./.github/actions/dlss-sdk
-
-      # xpdf's pdftotext, where the runner has none.
       - name: pdftotext
         if: matrix.dist == '--dlss' && runner.os == 'Windows'
         run: command -v pdftotext || choco install -y --no-progress xpdf-utils
-
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-about@0.9.3
-
-      # The dependencies as built last time (about 9 minutes of a Windows
-      # build). Main and hand runs save them; a tag's run only reads.
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref_type != 'tag' }}
-
-      # The cache brings back what is left of the folder of the package
-      # that was built when the cache was saved (its name has that build's
-      # version). The check below takes the first package folder it finds,
-      # so only this build's may be there.
-      - name: no package from the cache
+          key: dist
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') }}
+      - name: remove cached packages
         run: rm -rf target/packages
-
-      # The dist profile's build (the icon on macOS), the crates' licences,
-      # packed. PowerShell, so Windows packs with its own tar (zips), not
-      # Git Bash's.
       - name: package
         shell: pwsh
-        run: cargo xtask dist ${{ matrix.dist }}
-
-      - name: check the package
-        env:
-          DIST: ${{ matrix.dist }}
         run: |
-          cd target/packages
-          ls -la
-          stage=$(ls -d kjk-*/ | head -n 1)
-          for f in README.txt LICENSE.txt NOTICE.txt THIRD-PARTY-LICENSES.html THIRD-PARTY-LICENSES-save-editor.html; do
-            test -f "$stage$f" || { echo "missing $f"; exit 1; }
-          done
-          # NVIDIA's release library (never a development one), its
-          # licence and notices.
-          if [ "$DIST" = --dlss ]; then
-            for f in NVIDIA-RTX-SDK-LICENSE.txt NVIDIA-DLSS-NOTICES.txt; do
-              test -s "$stage$f" || { echo "missing $f"; exit 1; }
-            done
-            case "$RUNNER_OS" in
-              Windows) library=nvngx_dlss.dll platform=Windows_x86_64 ;;
-              *) library=$(basename "$(ls "$stage"libnvidia-ngx-dlss.so.*)") platform=Linux_x86_64 ;;
-            esac
-            cmp "$stage$library" "$DLSS_SDK/lib/$platform/rel/$library"
-          fi
-          # kjk and the save editor beside it, each started once.
-          for pair in "kjk.app:kjk" "kjk Save Editor.app:kjk-save-editor"; do
-            app="${stage}${pair%%:*}"
-            binary="${pair##*:}"
-            case "$RUNNER_OS" in
-              macOS)
-                plutil -lint "$app/Contents/Info.plist"
-                test -f "$app/Contents/Resources/kjk.icns"
-                codesign --verify --strict -vv "$app"
-                program="$app/Contents/MacOS/$binary" ;;
-              Windows) program="${stage}${binary}.exe" ;;
-              *) program="${stage}${binary}" ;;
-            esac
-            file "$program" || true
-            "$program" --help
-          done
-
-      # Proof the package came from this repository's workflow at this
-      # commit: a Sigstore-signed provenance anyone can check with
-      # `gh attestation verify <file> --repo kjk-engine/kjk`. Hand runs
-      # attest too, so a package added to a Release later is covered.
+          if ($env:DIST -eq '--dlss') {
+            cargo run --locked -q -p xtask -- dist --dlss
+          } else {
+            cargo run --locked -q -p xtask -- dist
+          }
+      - name: check the extracted archive
+        run: |
+          flags=()
+          if [ "$DIST" = --dlss ]; then flags+=(--dlss); fi
+          python .github/release.py check --packages target/packages \
+            --tag "$KJK_RELEASE_TAG" --commit "$BUILD_COMMIT" --platform "$PLATFORM" "${flags[@]}"
       - uses: actions/attest-build-provenance@v2
-        # Not main's cache-saving builds, which nobody downloads.
-        if: github.ref != 'refs/heads/main'
+        if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
         with:
           subject-path: |
             target/packages/*.tar.gz
             target/packages/*.zip
-
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
@@ -176,121 +132,75 @@ jobs:
             target/packages/*.zip
           if-no-files-found: error
 
-  # The sim steps alike on every OS (the pinned hash), or a player's
-  # recording would not replay on another's machine. The test runs beside
-  # the package's build (it took 8 minutes before the build on Windows), and
-  # the draft leaves out the package of an OS whose test did not pass.
+  # Windows and Linux run the full approved suite in checks. The optional Mac
+  # package retains its own determinism gate, even when no runner is available.
   sim:
-    name: sim determinism (${{ matrix.name }})
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include: *systems
-    defaults:
-      run:
-        shell: bash
+    name: sim determinism (macOS arm64)
+    needs: context
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
         with:
-          # The order the pending bump files reached main numbers them.
+          ref: ${{ needs.context.outputs.commit }}
           fetch-depth: 0
-
       - name: Toolchain
         run: rustup toolchain install
-
-      # The approved tests build the sound device's stream, whose backend
-      # (cpal) links ALSA on Linux.
-      - name: Linux packages
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y pkg-config libasound2-dev
-
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: sim
+          save-if: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') }}
       - name: sim determinism
-        run: cargo test --release -p approved_tests --test approved sim_determinism
-
-      # What the draft looks for before it takes this OS's package.
+        run: cargo test --release --locked -p approved_tests --test approved sim_determinism
       - name: passed
         run: echo passed > sim-passed.txt
-
       - uses: actions/upload-artifact@v4
         with:
-          name: sim-${{ matrix.artifact }}
+          name: sim-macos-arm64
           path: sim-passed.txt
           if-no-files-found: error
 
-  # Drafted with the packages that built: GitHub's macOS arm64 runners are at
-  # times not given at all ("not acquired ... after multiple attempts"), and
-  # one OS missing should not hold back the others. The notes name what is
-  # missing; it can be built and added to the draft later (docs/RELEASE.md).
   release:
-    name: draft release
-    needs: [package, sim]
-    if: always() && (startsWith(github.ref, 'refs/tags/v') || inputs.prerelease)
+    name: publish development or draft stable release
+    needs: [context, checks, package, sim]
+    if: >-
+      always() && !cancelled() && needs.context.result == 'success' &&
+      needs.checks.result == 'success' && needs.context.outputs.publication != 'none'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      # A pre-release is named by `git describe`, as its packages are.
       - uses: actions/checkout@v4
-        if: github.event_name == 'workflow_dispatch'
         with:
+          ref: ${{ needs.context.outputs.commit }}
           fetch-depth: 0
-
-      # Each artifact in a folder of its name.
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
-
-      - name: packages whose sim test passed
+      - name: require Windows and Linux and write update metadata
         run: |
-          mkdir packages
-          for system in macos-arm64 windows-x86_64 linux-x86_64; do
-            [ -d "artifacts/$system" ] || continue
-            if [ -d "artifacts/sim-$system" ]; then
-              mv "artifacts/$system"/* packages/
-            else
-              echo "::warning::the sim determinism test did not pass on $system: its package is not on the draft"
-            fi
-          done
-
-      - name: checksums
-        working-directory: packages
-        run: sha256sum -- * > SHA256SUMS && cat SHA256SUMS
-
-      - name: draft
+          python .github/release.py assemble --context artifacts/release-context/release-context.json \
+            --artifacts artifacts --output packages
+      - name: release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.context.outputs.tag }}
+          BUILD_COMMIT: ${{ needs.context.outputs.commit }}
+          PUBLICATION: ${{ needs.context.outputs.publication }}
+          PRERELEASE: ${{ needs.context.outputs.prerelease }}
+          TAGGED: ${{ needs.context.outputs.tagged }}
         run: |
-          built="" missing=""
-          for pair in "macos-aarch64:macOS (Apple silicon)" "windows-x86_64:Windows (x86-64)" "linux-x86_64:Linux (x86-64)"; do
-            label=${pair#*:}
-            if compgen -G "packages/kjk-*-${pair%%:*}.*" >/dev/null; then
-              built+="${built:+, }$label"
-            else
-              missing+="${missing:+, }$label"
-              echo "::warning::no $label package: it is not on the draft"
-            fi
-          done
-          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
-            # A branch's pre-release: its tag is made at this commit when the
-            # draft is published, and never starts with `v`, so it is not taken
-            # for a release (`git describe --match 'v*'`) or start this workflow.
-            version=$(git describe --tags --match 'v*' --always)
-            slug=$(printf %s "$GITHUB_REF_NAME" | tr -c 'A-Za-z0-9._-' '-')
-            tag="pre-$slug-$version"
-            title="kjk $version ($GITHUB_REF_NAME)"
-            intro="A pre-release of the branch \`$GITHUB_REF_NAME\` at ${GITHUB_SHA:0:7}, for testing: not a release, and not checked against earlier releases' saves as a release is. "
-            how=(--target "$GITHUB_SHA" --prerelease)
-          else
-            tag=$GITHUB_REF_NAME
-            title="kjk $tag"
-            intro=""
-            how=(--verify-tag)
-            # `v0.14.0-rc.1`, `v0.14.0-beta`: a pre-release of a version.
-            case $tag in *-*) how+=(--prerelease) ;; esac
+          python .github/release.py verify --context artifacts/release-context/release-context.json
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::Release $TAG already exists; published assets are never replaced. Delete an unwanted draft yourself before rerunning."
+            exit 1
           fi
-          notes="${intro}Unsigned builds for $built. Read README.txt in the package first; SHA256SUMS lists each file's checksum; \`gh attestation verify <file> --repo $GITHUB_REPOSITORY\` proves a package was built by this repository's release workflow."
-          [ -z "$missing" ] || notes+=" The $missing build is not here yet."
-          gh release create "$tag" packages/* \
-            --repo "$GITHUB_REPOSITORY" --draft "${how[@]}" \
-            --title "$title" --notes "$notes"
+          flags=()
+          if [ "$TAGGED" = true ]; then
+            flags+=(--verify-tag)
+          else
+            flags+=(--target "$BUILD_COMMIT")
+          fi
+          if [ "$PUBLICATION" = draft ]; then flags+=(--draft); fi
+          if [ "$PRERELEASE" = true ]; then flags+=(--prerelease --latest=false); fi
+          gh release create "$TAG" packages/* --repo "$GITHUB_REPOSITORY" \
+            "${flags[@]}" --title "kjk $TAG" --notes-file packages.md

@@ -29,11 +29,26 @@ pub fn git_sha<P: AsRef<Path>>(sources: &[P]) {
         "cargo:rustc-env=KJK_GIT_SHA={sha}{}",
         if dirty { "-dirty" } else { "" }
     );
-    // The release the build is from or after: the latest `v*` tag, which
-    // only moves when the owner tags a release (a build between releases
-    // keeps it).
-    let version = git(&["describe", "--tags", "--match", "v*", "--abbrev=0"])
-        .unwrap_or_else(|| "dev".to_string());
+    println!("cargo:rerun-if-env-changed=KJK_RELEASE_TAG");
+    let version = match std::env::var("KJK_RELEASE_TAG") {
+        Ok(tag) => {
+            assert!(
+                !tag.is_empty()
+                    && tag.len() <= 128
+                    && tag.as_bytes()[0].is_ascii_alphanumeric()
+                    && tag
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c)),
+                "KJK_RELEASE_TAG must be a safe release tag of at most 128 ASCII characters"
+            );
+            tag
+        }
+        Err(std::env::VarError::NotPresent) => {
+            git(&["describe", "--tags", "--match", "v*", "--abbrev=0"])
+                .unwrap_or_else(|| "dev".to_string())
+        }
+        Err(error) => panic!("KJK_RELEASE_TAG: {error}"),
+    };
     println!("cargo:rustc-env=KJK_VERSION={version}");
     for source in sources {
         println!("cargo:rerun-if-changed={}", source.as_ref().display());
