@@ -178,8 +178,10 @@ Windows x86-64 and Linux x86-64 each run the existing approved tests and build
 the player (`cargo build --locked -p launcher --no-default-features`), then
 start it with `--help` and `--version`. No game installs are needed: scenarios
 that require them report their skipped portions. These checks do not establish
-gameplay, graphics or handheld compatibility. The release helper and update
-script also start with `--help` on both platforms.
+gameplay, graphics or handheld compatibility. Both platforms also build the
+standalone Rust updater (`cargo build --locked -p updater`) and start its
+native `kjk-update --help`. It has no Bevy/game dependency and needs no Python
+on the test device. The CI-only release helper also starts with `--help`.
 
 Linux also runs publish-check, licences (`cargo deny`), fmt, all-feature clippy
 and no-default-feature clippy. Main retains the extra default-feature/Steam

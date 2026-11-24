@@ -139,7 +139,8 @@ def package_name(tag, platform):
 def package_files(platform, dlss):
     files = {
         "README.txt", "LICENSE.txt", "NOTICE.txt", "THIRD-PARTY-LICENSES.html",
-        "THIRD-PARTY-LICENSES-save-editor.html", "kjk-update.py",
+        "THIRD-PARTY-LICENSES-save-editor.html", "THIRD-PARTY-LICENSES-updater.html",
+        "kjk-update.exe" if platform == "windows-x86_64" else "kjk-update",
     }
     programs = ("kjk", "kjk-save-editor")
     if platform == "macos-aarch64":
@@ -230,6 +231,10 @@ def check_package(args):
                 raise ValueError(f"program is not executable: {program.name}")
             subprocess.run([str(program), "--help"], check=True)
             programs.append(program)
+        updater = stage / ("kjk-update.exe" if args.platform == "windows-x86_64" else "kjk-update")
+        if args.platform != "windows-x86_64" and not updater.stat().st_mode & 0o111:
+            raise ValueError("updater is not executable")
+        subprocess.run([str(updater), "--help"], check=True)
         version = subprocess.check_output([str(programs[0]), "--version"], text=True).strip()
         if version != f"kjk {args.tag} ({args.commit})":
             raise ValueError(f"package version does not identify this build: {version}")

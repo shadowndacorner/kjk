@@ -6,7 +6,7 @@ autosave, GOG's registry and runs on Linux and the Steam Deck are not
 (below, "Not yet").
 
 No game data is ever packaged: a release contains `kjk`, its save editor,
-the update script, a readme and the licences. The player's own installs are
+the native updater, a readme and the licences. The player's own installs are
 found or chosen on the first start and only ever read.
 
 ## The player's build
@@ -31,16 +31,19 @@ as Valve's test app 480), so Steam co-op is for builds made from source
 
 | OS | package | inside |
 |---|---|---|
-| Windows | `kjk-<version>-windows-<arch>.zip` | `kjk.exe`, `kjk-save-editor.exe`, update script and texts below |
-| macOS | `kjk-<version>-macos-<arch>.tar.gz` | `kjk.app`, `kjk Save Editor.app`, update script and texts below |
-| Linux, Steam Deck | `kjk-<version>-linux-<arch>.tar.gz` | `kjk`, `kjk-save-editor`, update script and texts below |
+| Windows | `kjk-<version>-windows-<arch>.zip` | `kjk.exe`, `kjk-save-editor.exe`, `kjk-update.exe` and texts below |
+| macOS | `kjk-<version>-macos-<arch>.tar.gz` | `kjk.app`, `kjk Save Editor.app`, `kjk-update` CLI and texts below |
+| Linux, Steam Deck | `kjk-<version>-linux-<arch>.tar.gz` | `kjk`, `kjk-save-editor`, `kjk-update` and texts below |
 
-Every archive also contains `kjk-update.py`, `README.txt`, `LICENSE.txt`,
-`NOTICE.txt`, `THIRD-PARTY-LICENSES.html` and
-`THIRD-PARTY-LICENSES-save-editor.html`. The updater supports Windows and
-Linux and needs Python 3.10 or newer; its setup and channel choices are in
-[`UPDATES.md`](UPDATES.md). The macOS package keeps the same script for
-consistent contents, but the updater does not install macOS builds.
+Every archive also contains `README.txt`, `LICENSE.txt`, `NOTICE.txt`,
+`THIRD-PARTY-LICENSES.html`, `THIRD-PARTY-LICENSES-save-editor.html` and
+`THIRD-PARTY-LICENSES-updater.html`. `dist` builds the standalone Rust
+updater in its own `target/updater` directory and generates its licence
+page from its own dependency graph. No Python installation is needed on
+the test device. Setup and channel choices are in [`UPDATES.md`](UPDATES.md).
+The macOS package includes the native CLI with working help; installation
+commands support only Windows/Linux x86-64. It has no GUI app bundle.
+The existing `.github/release.py` helper runs on CI runners only.
 
 CI sets `KJK_RELEASE_TAG` to the exact verified tag. The package name, game
 menu, launcher version, editor and saved build metadata all carry that

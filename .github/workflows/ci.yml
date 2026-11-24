@@ -162,8 +162,9 @@ jobs:
 
       - name: delivery tools startup
         run: |
+          cargo build --locked -p updater
+          ./target/debug/kjk-update --help
           python -B .github/release.py --help
-          python -B tools/kjk-update.py --help
 
       - name: default features and Steam
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && runner.os == 'Linux'

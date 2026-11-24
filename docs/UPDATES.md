@@ -1,8 +1,9 @@
 # Updating a test device
 
-`kjk-update.py` installs published releases from a trusted public GitHub
+`kjk-update` installs published releases from a trusted public GitHub
 repository on Windows or Linux x86-64. It is included beside the game in
-new packages and available as `tools/kjk-update.py` in this repository.
+new packages. It is a standalone native Rust executable, built from
+`crates/updater`; it does not start Python or load the game engine.
 The default repository is **`shadowndacorner/kjk`**, this testing fork.
 The default channel is **stable**, from **main**. Development builds require
 `--channel dev`, which selects **develop** and tags matching **`dev-*`**.
@@ -21,17 +22,19 @@ them. Development releases must be published prereleases.
 
 ## One-time setup
 
-Install **Python 3.10 or newer** once. No Python packages, Git, Rust,
-administrator access or GitHub token are required. On Windows, install
-Python with its `py` launcher and check `py -3 --version`. On Linux,
-including SteamOS Desktop Mode, check `python3 --version`; use your
-distribution's supported Python installation if it is missing or older.
+Download and extract one trusted release package for your operating system.
+Keep its `kjk-update.exe` (Windows) or `kjk-update` (Linux) in a convenient
+folder outside the managed versions, such as `KJK-test` in your home
+directory. Keep `LICENSE.txt`, `NOTICE.txt` and
+`THIRD-PARTY-LICENSES-updater.html` with it. No Python, Git, Rust,
+administrator access or GitHub token is needed on the test device.
 
-Keep a copy of `kjk-update.py` in a convenient folder outside the managed
-versions, such as a `KJK-test` folder in your home directory. Use that same
-copy for subsequent commands. Updates install the packaged updater as
-part of each version, but **never replace or run that new updater copy**.
-To adopt an updated script, replace your launcher copy deliberately.
+Use that same executable for subsequent commands. Updates install the
+packaged updater as part of each version, but **never replace or run that
+new updater copy**. To adopt a newer updater, replace your launcher copy
+deliberately while it is not running. A developer can build it without the
+game engine using `cargo build --locked -p updater`; the binary is written
+to `target/debug/`. The Rust toolchain is needed only to build from source.
 
 The following commands run from the folder holding that copy.
 
@@ -40,17 +43,16 @@ The following commands run from the folder holding that copy.
 In PowerShell:
 
 ```powershell
-py -3 .\kjk-update.py --channel dev check
-py -3 .\kjk-update.py --channel dev update
-py -3 .\kjk-update.py --channel dev launch
+.\kjk-update.exe --channel dev check
+.\kjk-update.exe --channel dev update
+.\kjk-update.exe --channel dev launch
 ```
 
 For a shortcut that checks for a new development build on each start,
-run the installed Python launcher with these arguments, replacing the
-script path with yours:
+use this shortcut target, replacing the executable path with yours:
 
 ```text
--3 "C:\Users\you\KJK-test\kjk-update.py" --channel dev launch --update
+"C:\Users\you\KJK-test\kjk-update.exe" --channel dev launch --update
 ```
 
 ### Linux / Steam Deck
@@ -58,20 +60,19 @@ script path with yours:
 In a terminal, in Desktop Mode on the Deck:
 
 ```bash
-python3 kjk-update.py --channel dev check
-python3 kjk-update.py --channel dev update
-python3 kjk-update.py --channel dev launch
+./kjk-update --channel dev check
+./kjk-update --channel dev update
+./kjk-update --channel dev launch
 ```
 
-For Steam Game Mode, add a non-Steam game whose target is your Python
-interpreter (the path printed by `command -v python3`). Set its launch
-options to the absolute script path followed by the updater options:
+For Steam Game Mode, add a non-Steam game whose target is the native
+updater, such as `/home/you/KJK-test/kjk-update`. Set its launch options:
 
 ```text
-"/home/you/KJK-test/kjk-update.py" --channel dev launch --update
+--channel dev launch --update
 ```
 
-Use your script's folder for Steam's "Start In" directory. The updater
+Use the updater's folder for Steam's "Start In" directory. The updater
 starts the game as its child and waits for it. This shortcut arrangement
 still needs a real Deck gamepad and Game Mode playtest. The game's
 first-run setup locates your own game installs, which remain read-only.
@@ -91,23 +92,23 @@ Only `launch --update` and game arguments go after the command.
 | `--tag exact-tag` | Choose one published release. Mutually exclusive with `--tag-pattern`; explicitly permits an older or divergent commit. Channel and branch checks still apply. |
 | `--root path` | Parent folder for managed installations and profiles. The normal OS data folder is used when omitted. |
 
-Examples on Linux (replace `python3` with `py -3` on Windows):
+Examples on Linux (use `.\kjk-update.exe` instead of `./kjk-update` on Windows):
 
 ```bash
 # Stable from main, with an update before starting.
-python3 kjk-update.py launch --update
+./kjk-update launch --update
 
 # A narrower series of develop tags.
-python3 kjk-update.py --channel dev --tag-pattern 'dev-ally-*' update
+./kjk-update --channel dev --tag-pattern 'dev-ally-*' update
 
 # A published manual prerelease from another branch.
-python3 kjk-update.py --channel dev --branch feature/handheld --tag-pattern 'pre-*' update
+./kjk-update --channel dev --branch feature/handheld --tag-pattern 'pre-*' update
 
 # One exact published develop tag, including an intentional older build.
-python3 kjk-update.py --channel dev --tag dev-ally-001 update
+./kjk-update --channel dev --tag dev-ally-001 update
 
 # Pass arguments directly to the installed game.
-python3 kjk-update.py --channel dev launch -- --help
+./kjk-update --channel dev launch -- --help
 ```
 
 The branch is read from the manifest, not inferred from a GitHub release's
@@ -137,7 +138,9 @@ The default parent folder is `%LOCALAPPDATA%\kjk-updates` on Windows and
 `$XDG_DATA_HOME/kjk-updates` on Linux (`~/.local/share/kjk-updates` when
 unset). Each **repository + channel + exact branch** has a separate
 subfolder, named by a shortened hash and checked against its `scope.json`.
-The updater prints the selected `profile` folder.
+The updater prints the selected `profile` folder. The native updater keeps
+the previous updater's scope hash and installed IDs, so existing managed
+profiles and offline launches remain accessible.
 
 | Managed path inside that subfolder | Purpose |
 |---|---|
@@ -162,8 +165,8 @@ To switch the current and previous installed binaries, without a network
 request:
 
 ```bash
-python3 kjk-update.py --channel dev rollback
-python3 kjk-update.py --channel dev launch
+./kjk-update --channel dev rollback
+./kjk-update --channel dev launch
 ```
 
 Rollback preserves the profile as it is. It does **not** restore, migrate
@@ -182,7 +185,7 @@ addition to retained versions and imported data.
 a successful check/update before starting; a network, rate-limit,
 verification or installation failure exits without starting the game.
 Run `launch` explicitly to use the existing version after such a failure.
-The script uses the unauthenticated public GitHub API and does not read
+The updater uses the unauthenticated public GitHub API and does not read
 credentials or support private repositories.
 
 Each package's exact filename, byte count and SHA-256 must agree with
@@ -192,13 +195,18 @@ Linux packages. Missing or malformed metadata stops selection. Download
 URLs are constructed from the selected repository, tag and asset name;
 metadata cannot supply a command or arbitrary download URL. HTTPS
 redirects are restricted to GitHub's asset hosts.
+TLS certificate verification uses the operating system's trust store through
+rustls; keep the device's system certificate store up to date.
 
 The limits are 1 GiB per archive, 4 GiB expanded tar or file content,
-10,000 archive entries, 32 path components and 240 characters per archive
+10,000 archive entries (including tar metadata), 32 path components and 240 characters per archive
 path. ZIP central directories are limited to 4 MiB; ZIP64, encryption and
 compression other than stored/deflate are unsupported. Downloads have a
 30-second socket timeout and a ten-minute streaming deadline. Metadata
-responses are capped at 4 MiB and manifests at 64 KiB. Automatic selection
+responses are capped at 4 MiB and manifests at 64 KiB. Local tar metadata
+is bounded to 16 KiB and only paths and ordinary ownership/time fields are
+accepted; GNU long names are bounded to 240 characters. Global tar metadata,
+ACLs, extended attributes and unknown PAX fields are refused. Automatic selection
 scans at most 1,000 releases; use an exact tag if the repository exceeds
 that limit. These limits can reject a future oversized package safely.
 
@@ -223,6 +231,6 @@ process, so the updater continues waiting. The updater never overwrites
 an installed executable, including one still running after a restart.
 
 Checksums provide integrity against the trusted repository's release
-metadata. This script does not verify Sigstore attestations or an
+metadata. This updater does not verify Sigstore attestations or an
 independent signature. Choose `--repo` with the same care as downloading
 and running that repository's programs yourself.

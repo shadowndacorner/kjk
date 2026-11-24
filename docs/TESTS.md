@@ -425,7 +425,9 @@ request, every tag and main/develop pushes. Release tags call this same gate
 from `release.yml` before publication; a malformed release tag still gets its
 CI checks. Linux also runs publish-check, licences (`cargo deny`), fmt and
 clippy. Both platforms build and start the player with `--help` and
-`--version`, without game installs. Portions needing an install or the `rig`
+`--version`, and build the native Rust updater and start `kjk-update --help`,
+without game installs. No new permanent updater tests have been approved;
+exploratory fixtures belong in ignored artifacts. Portions needing an install or the `rig`
 or `editor` features remain skipped; a green run is not a gameplay or hardware
 playtest. `manual.yml` keeps Windows/macOS tests on the first of each month
 and optional runs by hand; release packaging keeps macOS's determinism gate.

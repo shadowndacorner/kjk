@@ -13,7 +13,8 @@
 //! The save editor (`kjk-save-editor`, `crates/save_editor`) is built from
 //! the same commit in a cargo run of its own (so kjk's build is the same
 //! with or without it) and staged beside kjk: `kjk Save Editor.app` on
-//! macOS, with its own `THIRD-PARTY-LICENSES-save-editor.html`.
+//! macOS, with its own `THIRD-PARTY-LICENSES-save-editor.html`. The native
+//! updater is a standalone CLI beside them, with its own licence page.
 //!
 //! Everything goes to `target/packages/`. `--skip-build` packs the
 //! programs the last run built; `--pgo <profile>` builds kjk with a profile
@@ -90,11 +91,13 @@ before it is written, and the save as it was is kept beside it
 
 Movies need ffmpeg on the PATH; without it they are skipped.
 
-Updates: kjk-update.py installs published stable or development builds into
-separate managed folders. It needs Python 3.10 or newer; run
-    python kjk-update.py --help
+Updates: kjk-update installs published stable or development builds into
+separate managed folders on Windows/Linux x86-64. Run
+    kjk-update.exe --help       (Windows)
+    ./kjk-update --help         (Linux)
 for its commands. See docs/UPDATES.md in the source repository for setup,
-isolated profiles and rollback. The updater never changes your game installs.
+isolated profiles and rollback. No Python or Rust installation is needed.
+The updater never changes your game installs; macOS installation is unsupported.
 
 Co-op: friends join by the host's address, as on a LAN; over the internet
 the host forwards UDP port 29170.
@@ -106,7 +109,8 @@ Star Wars, Knights of the Old Republic and Jedi Academy are trademarks of
 their respective owners; kjk is not affiliated with or endorsed by
 them. kjk is MIT licensed (LICENSE); NOTICE credits the projects read
 as references, and THIRD-PARTY-LICENSES.html lists the libraries it is
-built from (THIRD-PARTY-LICENSES-save-editor.html the save editor's).
+built from (THIRD-PARTY-LICENSES-save-editor.html the save editor's,
+THIRD-PARTY-LICENSES-updater.html the updater's).
 ";
 
 /// `LEGAL_README` in a package with NVIDIA's files, which LICENSE does not
@@ -117,7 +121,8 @@ their respective owners; kjk is not affiliated with or endorsed by
 them. kjk's own code is MIT licensed (LICENSE); the NVIDIA files are not
 (see DLSS below). NOTICE credits the projects read as references, and
 THIRD-PARTY-LICENSES.html lists the libraries it is built from
-(THIRD-PARTY-LICENSES-save-editor.html the save editor's).
+(THIRD-PARTY-LICENSES-save-editor.html the save editor's,
+THIRD-PARTY-LICENSES-updater.html the updater's).
 ";
 
 /// What the readme adds in a package built with `--dlss`.
@@ -170,7 +175,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         &["--no-default-features"]
     };
     // Each program and the features it is built (and its licences read) with.
-    let programs = [(KJK, kjk_features), (EDITOR, &[])];
+    let programs = [(KJK, kjk_features), (EDITOR, &[]), (UPDATER, &[])];
     let root = repo_root();
     let packages = target_dir(&root).join("packages");
     create(&packages)?;
@@ -183,8 +188,8 @@ pub fn run(args: &[String]) -> Result<(), String> {
     }
     if !skip_build {
         let remaps = remaps(&root);
-        // One cargo run each: the editor's crates and features never touch
-        // kjk's build. Both run at once, each in a build folder of its own
+        // One cargo run each: the other programs' crates and features never
+        // touch kjk's build. Each runs in a build folder of its own
         // (one folder takes one cargo run at a time): fat LTO optimises kjk
         // on one core for most of its build, and the editor builds on the
         // other cores meanwhile.
@@ -216,7 +221,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 .map_err(|error| format!("cargo build: {error}"))?;
             builds.push((program, build));
         }
-        // Both are waited for before a failure is reported, so neither is
+        // All are waited for before a failure is reported, so none is
         // left running.
         let mut failed = Vec::new();
         for (program, mut build) in builds {
@@ -242,7 +247,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
             Err(format!("dist: {} is not built", built.display()))
         }
     };
-    let builds = [built(&KJK)?, built(&EDITOR)?];
+    let builds = [built(&KJK)?, built(&EDITOR)?, built(&UPDATER)?];
 
     let version = version()?;
     let os = match std::env::consts::OS {
@@ -257,8 +262,8 @@ pub fn run(args: &[String]) -> Result<(), String> {
     }
     std::fs::create_dir_all(&stage).map_err(|error| format!("{}: {error}", stage.display()))?;
 
-    for (program, built) in [KJK, EDITOR].iter().zip(&builds) {
-        if os == "macos" {
+    for (program, built) in [KJK, EDITOR, UPDATER].iter().zip(&builds) {
+        if os == "macos" && program.package != UPDATER.package {
             let app = stage.join(program.app).join("Contents");
             let binaries = app.join("MacOS");
             create(&binaries)?;
@@ -278,10 +283,6 @@ pub fn run(args: &[String]) -> Result<(), String> {
         None => format!("{PLAYERS_README}{LEGAL_README}"),
     };
     write(&stage.join("README.txt"), &readme)?;
-    copy(
-        &root.join("tools/kjk-update.py"),
-        &stage.join("kjk-update.py"),
-    )?;
     copy(&root.join("LICENSE"), &stage.join("LICENSE.txt"))?;
     copy(&root.join("NOTICE"), &stage.join("NOTICE.txt"))?;
     for ((program, _), (mut writing, page)) in programs.into_iter().zip(licences) {
@@ -399,6 +400,19 @@ const EDITOR: Program = Program {
     name: "kjk Save Editor",
     id: "io.github.kjk.save-editor",
     category: "public.app-category.utilities",
+};
+
+// The updater remains a command-line executable, including on macOS; it
+// reports that installation is supported only on Windows/Linux x86-64.
+const UPDATER: Program = Program {
+    binary: "kjk-update",
+    package: "updater",
+    manifest: "crates/updater/Cargo.toml",
+    licences: "THIRD-PARTY-LICENSES-updater.html",
+    app: "",
+    name: "kjk-update",
+    id: "",
+    category: "",
 };
 
 /// The sources' paths the program carries (in its panics) name no machine:
@@ -537,14 +551,14 @@ pub(crate) fn target_dir(root: &Path) -> PathBuf {
     std::env::var_os("CARGO_TARGET_DIR").map_or_else(|| root.join("target"), PathBuf::from)
 }
 
-/// Where cargo builds `program`: kjk in the target folder, the editor in a
-/// folder of its own inside it, so both build at once.
+/// Where cargo builds `program`: kjk in the target folder, the editor and
+/// updater in their own subfolders, so the programs can build at once.
 fn build_dir(root: &Path, program: &Program) -> PathBuf {
     let target = target_dir(root);
-    if program.package == EDITOR.package {
-        target.join("editor")
-    } else {
-        target
+    match program.package {
+        "save_editor" => target.join("editor"),
+        "updater" => target.join("updater"),
+        _ => target,
     }
 }
 
