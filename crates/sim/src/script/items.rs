@@ -749,6 +749,17 @@ impl State {
                 return Err(refused);
             }
             let had = old[0].template.clone();
+            let new_facts = catalog.get(&colour).ok_or(refused.clone())?;
+            let keeps_rows = (0..32).all(|row| {
+                target.upgrades & (1u32 << row) == 0 || new_facts.takes(row as u8).is_some()
+            });
+            let keeps_slots =
+                target.fitted.iter().enumerate().all(|(slot, part)| {
+                    part.is_empty() || new_facts.slot_kinds.get(slot).is_some()
+                });
+            if !keeps_rows || !keeps_slots {
+                return Err(refused);
+            }
             self.refit(out, item, |held| held.template = colour);
             if self.make_item(catalog, &had, PARTY, 1, None).is_none() {
                 return Err(refused);

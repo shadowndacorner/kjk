@@ -347,7 +347,8 @@ fn ambiguous_colour_catalog() -> Catalog {
 fn slot_catalog() -> Catalog {
     Catalog::new([
         host("slot_saber", vec![COLOUR_SLOT, 0], slots::RIGHT_WEAPON),
-        part("slot_crystal", 0, 0, Vec::new()),
+        part("slot_crystal", COLOUR_SLOT, 0, Vec::new()),
+        part("slot_crystal2", COLOUR_SLOT, 0, Vec::new()),
     ])
 }
 
@@ -386,6 +387,27 @@ fn stack_of(world: &SimWorld, template: &str) -> u16 {
 
 /// An upgrade taken out returns exactly one unit and the item keeps the
 /// rest of its holdings.
+fn out_same(a: &Out, b: &Out) -> bool {
+    a.changes == b.changes
+        && a.notices == b.notices
+        && a.goals == b.goals
+        && a.intents == b.intents
+        && a.area_sound == b.area_sound
+        && a.fade == b.fade
+        && a.world_fade_in == b.world_fade_in
+        && a.video_effect == b.video_effect
+        && a.new_module == b.new_module
+        && a.worn_before == b.worn_before
+        && a.made == b.made
+        && a.deleted == b.deleted
+        && a.destroyed == b.destroyed
+        && a.minigame == b.minigame
+        && a.lost == b.lost
+        && a.statuses == b.statuses
+        && a.feedback == b.feedback
+        && a.assigned == b.assigned
+}
+
 fn return_atomic_checks() -> Checks {
     let mut checks: Checks = Vec::new();
 
@@ -454,6 +476,30 @@ fn return_atomic_checks() -> Checks {
             format!("result {result:?}, returned {returned}"),
         ),
     ));
+
+    let catalog = slot_catalog();
+    let mut world = colour_world(catalog.clone());
+    let saber = give_with(&mut world, &catalog, "slot_saber", PARTY, None);
+    let new = give_with(&mut world, &catalog, "slot_crystal2", PARTY, None);
+    let mut state = world.script_state().clone();
+    let mut held = state.items.get_mut(&saber).expect("slot_saber");
+    held.fitted = vec!["slot_crystal".into(), String::new()];
+    drop(held);
+    world.set_script_state(state.clone());
+    let mut out = Out::default();
+    let result = state.fit(&catalog, &mut out, saber, new, Some(0));
+    world.set_script_state(state);
+    let item = world.script_state().items.get(&saber);
+    let returned = stack_of(&world, "slot_crystal") == 1;
+    let consumed = stack_of(&world, "slot_crystal2") == 0;
+    let fitted = item.is_some_and(|held| held.fitted[0] == "slot_crystal2");
+    checks.push((
+        "a TSL slot replacement returns the old part and consumes the new one",
+        check(
+            result.is_ok() && returned && consumed && fitted,
+            format!("result {result:?}, returned {returned}, consumed {consumed}, fitted {fitted}"),
+        ),
+    ));
     checks
 }
 
@@ -468,7 +514,7 @@ fn colour_refusal_checks() -> Checks {
     let mut state = world.script_state().clone();
     let mut out = Out::default();
     let result = state.fit(&catalog, &mut out, saber, new, None);
-    let kept = state == before && format!("{:?}", out) == format!("{:?}", Out::default());
+    let kept = state == before && out_same(&out, &Out::default());
     world.set_script_state(state);
     checks.push((
         "a missing old colour mapping refuses without changing the save state or output",
@@ -486,10 +532,32 @@ fn colour_refusal_checks() -> Checks {
     let mut state = world.script_state().clone();
     let mut out = Out::default();
     let result = state.fit(&catalog, &mut out, saber, new, None);
-    let kept = state == before && format!("{:?}", out) == format!("{:?}", Out::default());
+    let kept = state == before && out_same(&out, &Out::default());
     world.set_script_state(state);
     checks.push((
         "two old colour mappings for the same saber refuse instead of choosing one",
+        check(
+            result.is_err() && kept,
+            format!("result {result:?}, kept {kept}"),
+        ),
+    ));
+
+    let catalog = colour_catalog();
+    let mut world = colour_world(catalog.clone());
+    let saber = give_with(&mut world, &catalog, "saber", PARTY, None);
+    let new = give_with(&mut world, &catalog, "new_crystal", PARTY, None);
+    let mut state = world.script_state().clone();
+    let mut held = state.items.get_mut(&saber).expect("saber");
+    held.upgrades = crate::inventory::upgrade_bit(1).expect("row 1");
+    drop(held);
+    world.set_script_state(state.clone());
+    let before = state.clone();
+    let mut out = Out::default();
+    let result = state.fit(&catalog, &mut out, saber, new, None);
+    let kept = state == before && out_same(&out, &Out::default());
+    world.set_script_state(state);
+    checks.push((
+        "a colour swap that cannot keep an installed power crystal refuses",
         check(
             result.is_err() && kept,
             format!("result {result:?}, kept {kept}"),
@@ -527,9 +595,9 @@ fn output_rollback_checks() -> Checks {
     });
     out.notices.push((None, Notice::CannotUpgrade));
     out.lost = true;
-    let before_out = format!("{:?}", out);
+    let before_out = out.clone();
     let result = state.unfit(&catalog, &mut out, saber, 1);
-    let kept = state == before && format!("{:?}", out) == before_out;
+    let kept = state == before && out_same(&out, &before_out);
     world.set_script_state(state);
     checks.push((
         "a refused direct upgrade preserves the equipped item and every earlier output field",
@@ -562,7 +630,7 @@ fn output_rollback_checks() -> Checks {
     });
     out.notices.push((None, Notice::CannotUpgrade));
     out.lost = true;
-    let before_out = format!("{:?}", out);
+    let before_out = out.clone();
     let result = state.assemble(
         &catalog,
         &mut out,
@@ -578,7 +646,7 @@ fn output_rollback_checks() -> Checks {
         ),
         None,
     );
-    let kept = state == before && format!("{:?}", out) == before_out;
+    let kept = state == before && out_same(&out, &before_out);
     world.set_script_state(state);
     checks.push((
         "a partial Assemble restores every item and every earlier output field",

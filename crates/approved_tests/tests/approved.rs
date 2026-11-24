@@ -4399,7 +4399,7 @@ fn workshop_return_atomic() {
     probed(
         "workshop return atomic",
         &sim::workshop_probes::return_atomic_probes(),
-        3,
+        4,
     );
 }
 
@@ -4412,7 +4412,7 @@ fn workshop_colour_mapping_refused() {
     probed(
         "workshop colour mapping refused",
         &sim::workshop_probes::colour_refusal_probes(),
-        2,
+        3,
     );
 }
 
