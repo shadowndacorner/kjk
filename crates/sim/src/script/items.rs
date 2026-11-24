@@ -17,8 +17,8 @@ use crate::combat::passive;
 use crate::combat::sheet::{Sheet, Weapon};
 use crate::inventory::properties::Wearer;
 use crate::inventory::{
-    CREDITS, CRYSTAL, Catalog, Cost, FIRST_ITEM, Held, Item, ItemFacts, PARTY, has_upgrade, pairs,
-    properties, rewear, slots, upgrade_bit,
+    COLOUR_SLOT, CREDITS, CRYSTAL, Catalog, Cost, FIRST_ITEM, Held, Item, ItemFacts, PARTY,
+    has_upgrade, pairs, properties, rewear, slots, upgrade_bit,
 };
 use crate::notice::Notice;
 
@@ -689,6 +689,55 @@ impl State {
         Ok(value)
     }
 
+    /// Whether target facts and new facts keep each installed K1 row and TSL
+    /// slot with the same part identity and slot kind.
+    fn preserves(
+        target: &Item,
+        facts: &ItemFacts,
+        new_facts: &ItemFacts,
+        catalog: &Catalog,
+    ) -> bool {
+        for row in 0..32 {
+            if target.upgrades & (1u32 << row) == 0 {
+                continue;
+            }
+            let row = row as u8;
+            let Some(old) = facts.takes(row) else {
+                return false;
+            };
+            let Some(new) = new_facts.takes(row) else {
+                return false;
+            };
+            if old.template != new.template || old.kind != new.kind {
+                return false;
+            }
+        }
+        for (slot, part) in target.fitted.iter().enumerate() {
+            if part.is_empty() {
+                continue;
+            }
+            let Some(old_kind) = facts.slot_kinds.get(slot) else {
+                return false;
+            };
+            let Some(new_kind) = new_facts.slot_kinds.get(slot) else {
+                return false;
+            };
+            let Some(part_facts) = catalog.get(part) else {
+                return false;
+            };
+            let Some((_, part_kind)) = part_facts.upgrade else {
+                return false;
+            };
+            if part_kind != *old_kind || part_kind != *new_kind {
+                return false;
+            }
+            if part_kind != COLOUR_SLOT && part_facts.upgrade_level > new_facts.upgrade_level {
+                return false;
+            }
+        }
+        true
+    }
+
     /// What fitting `upgrade` (one the party carries) into `item` comes to
     /// (`Action::Fit`; whose it may be is `may_upgrade`'s): a colour crystal
     /// makes a lightsaber its colour's of its hilt (`ItemFacts::recolours`),
@@ -709,7 +758,14 @@ impl State {
         replace: Option<u8>,
     ) -> Result<(), Notice> {
         self.atomic(out, |state, out| {
-            state.fit_inner(catalog, out, item, upgrade, replace)
+            let whole = item;
+            let item = state.one_of(ObjectId(item)).0;
+            state.fit_inner(catalog, out, item, upgrade, replace)?;
+            if item != whole {
+                let holder = state.items.get(&item).map_or(PARTY, |held| held.holder);
+                state.add_to(catalog, item, holder);
+            }
+            Ok(())
         })
     }
 
@@ -750,14 +806,7 @@ impl State {
             }
             let had = old[0].template.clone();
             let new_facts = catalog.get(&colour).ok_or(refused.clone())?;
-            let keeps_rows = (0..32).all(|row| {
-                target.upgrades & (1u32 << row) == 0 || new_facts.takes(row as u8).is_some()
-            });
-            let keeps_slots =
-                target.fitted.iter().enumerate().all(|(slot, part)| {
-                    part.is_empty() || new_facts.slot_kinds.get(slot).is_some()
-                });
-            if !keeps_rows || !keeps_slots {
+            if !Self::preserves(target, &facts, new_facts, catalog) {
                 return Err(refused);
             }
             self.refit(out, item, |held| held.template = colour);
@@ -826,7 +875,16 @@ impl State {
         item: u32,
         row: u8,
     ) -> Result<(), Notice> {
-        self.atomic(out, |state, out| state.unfit_inner(catalog, out, item, row))
+        self.atomic(out, |state, out| {
+            let whole = item;
+            let item = state.one_of(ObjectId(item)).0;
+            state.unfit_inner(catalog, out, item, row)?;
+            if item != whole {
+                let holder = state.items.get(&item).map_or(PARTY, |held| held.holder);
+                state.add_to(catalog, item, holder);
+            }
+            Ok(())
+        })
     }
 
     fn unfit_inner(
