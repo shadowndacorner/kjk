@@ -4391,6 +4391,43 @@ fn workbench() {
     probed("workbench", &sim::workshop_probes::probes(), 16);
 }
 
+/// An upgrade taken out returns exactly one equivalent unit, and a refused
+/// replacement keeps the installed item and its holdings. Approved by the
+/// consolidated owner pass on 2026-11-24 as `workshop_return_atomic`.
+#[test]
+fn workshop_return_atomic() {
+    probed(
+        "workshop return atomic",
+        &sim::workshop_probes::return_atomic_probes(),
+        1,
+    );
+}
+
+/// A missing old colour or template mapping refuses the workbench
+/// transaction without losing the installed item. Approved by the
+/// consolidated owner pass on 2026-11-24 as
+/// `workshop_colour_mapping_refused`.
+#[test]
+fn workshop_colour_mapping_refused() {
+    probed(
+        "workshop colour mapping refused",
+        &sim::workshop_probes::colour_refusal_probes(),
+        1,
+    );
+}
+
+/// A refused workbench transaction preserves the earlier tick output and
+/// emits no success-only inventory side effect. Approved by the consolidated
+/// owner pass on 2026-11-24 as `workshop_transaction_output_rollback`.
+#[test]
+fn workshop_transaction_output_rollback() {
+    probed(
+        "workshop transaction output rollback",
+        &sim::workshop_probes::output_rollback_probes(),
+        1,
+    );
+}
+
 /// Saving and loading (I19, the `saves` crate): a world saved into a saves
 /// folder made here, read back and made again goes on as the saved one
 /// does, the same hash every tick for 500; the folder lists the latest first

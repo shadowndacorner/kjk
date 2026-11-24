@@ -1,0 +1,3 @@
+# The sim's hash moves on purpose: the upgrade bench keeps a refused change
+# out of the items, the allocator and the step's output.
+sim = "the upgrade bench stages item, allocator and output changes and restores them together when a change is refused"

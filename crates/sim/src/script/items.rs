@@ -673,6 +673,28 @@ impl State {
         }))
     }
 
+    /// `f`'s changes to items, the allocator and `out` are kept only if it
+    /// succeeds. A refused change restores the items, the next item number and
+    /// every output field to what they were before the call.
+    fn atomic<T>(
+        &mut self,
+        out: &mut Out,
+        f: impl FnOnce(&mut Self, &mut Out) -> Result<T, Notice>,
+    ) -> Result<T, Notice> {
+        let items = self.items.clone();
+        let next = self.next_item;
+        let kept = out.clone();
+        match f(self, out) {
+            Ok(value) => Ok(value),
+            Err(refused) => {
+                self.items = items;
+                self.next_item = next;
+                *out = kept;
+                Err(refused)
+            }
+        }
+    }
+
     /// What fitting `upgrade` (one the party carries) into `item` comes to
     /// (`Action::Fit`; whose it may be is `may_upgrade`'s): a colour crystal
     /// makes a lightsaber its colour's of its hilt (`ItemFacts::recolours`),
@@ -683,8 +705,21 @@ impl State {
     /// any, as TSL's bench lists them, `CRYSTAL`); K1's of a row
     /// and kind the item takes, the one of that kind `replace` names back to
     /// the party, which a full kind needs (`properties::room`). Its wearer
-    /// is dressed anew.
+    /// is dressed anew. A failure changes nothing, including the output.
     pub(crate) fn fit(
+        &mut self,
+        catalog: &Catalog,
+        out: &mut Out,
+        item: u32,
+        upgrade: u32,
+        replace: Option<u8>,
+    ) -> Result<(), Notice> {
+        self.atomic(out, |state, out| {
+            state.fit_inner(catalog, out, item, upgrade, replace)
+        })
+    }
+
+    fn fit_inner(
         &mut self,
         catalog: &Catalog,
         out: &mut Out,
@@ -714,10 +749,11 @@ impl State {
             let colour = colour.to_string();
             let had = catalog
                 .crystal_of(&facts.template)
-                .map(|crystal| crystal.template.clone());
+                .map(|crystal| crystal.template.clone())
+                .ok_or(refused.clone())?;
             self.refit(out, item, |held| held.template = colour);
-            if let Some(had) = had {
-                self.make_item(catalog, &had, PARTY, 1, None);
+            if self.make_item(catalog, &had, PARTY, 1, None).is_none() {
+                return Err(refused);
             }
         } else if !facts.slot_kinds.is_empty() {
             let (_, kind) = part.upgrade.ok_or(refused.clone())?;
@@ -735,7 +771,7 @@ impl State {
                     .ok_or(refused)?,
             };
             if !empty(&slot) {
-                self.unfit(catalog, out, item, slot as u8)?;
+                self.unfit_inner(catalog, out, item, slot as u8)?;
             }
             let slots = facts.slot_kinds.len();
             self.refit(out, item, |held| {
@@ -762,7 +798,7 @@ impl State {
                 return Err(refused);
             }
             if let Some(row) = out_row {
-                self.unfit(catalog, out, item, row)?;
+                self.unfit_inner(catalog, out, item, row)?;
             }
             self.refit(out, item, |held| held.upgrades |= bit);
         }
@@ -772,8 +808,19 @@ impl State {
 
     /// An upgrade taken out of `item` and back to the party
     /// (`Action::Unfit`), its wearer dressed anew: TSL's in slot `row` of
-    /// one with slots, else K1's of `upgrade.2da` row `row`.
+    /// one with slots, else K1's of `upgrade.2da` row `row`. A failure changes
+    /// nothing, including the output and the returned item.
     pub(crate) fn unfit(
+        &mut self,
+        catalog: &Catalog,
+        out: &mut Out,
+        item: u32,
+        row: u8,
+    ) -> Result<(), Notice> {
+        self.atomic(out, |state, out| state.unfit_inner(catalog, out, item, row))
+    }
+
+    fn unfit_inner(
         &mut self,
         catalog: &Catalog,
         out: &mut Out,
@@ -804,7 +851,9 @@ impl State {
             self.refit(out, item, |held| held.fitted[slot].clear());
             template
         };
-        self.make_item(catalog, &template, PARTY, 1, None);
+        if self.make_item(catalog, &template, PARTY, 1, None).is_none() {
+            return Err(Notice::CannotUpgrade);
+        }
         Ok(())
     }
 
@@ -815,7 +864,8 @@ impl State {
     /// holder (`add_to`), as KOTOR 2's bench splits one off. TSL's item (one
     /// with slots) is off its wearer while on TSL's bench: back on after
     /// only if `wearer`, who wore it, may wear it as it now is (its feats,
-    /// its limits), else it stays with the party.
+    /// its limits), else it stays with the party. A refused change restores
+    /// the items, the next item number and every output field.
     pub(crate) fn assemble(
         &mut self,
         catalog: &Catalog,
@@ -823,7 +873,18 @@ impl State {
         (item, changes): (u32, &[Fitting]),
         wearer: Option<&Wearer>,
     ) -> Result<(), Notice> {
-        let before = (self.items.clone(), self.next_item);
+        self.atomic(out, |state, out| {
+            state.assemble_inner(catalog, out, (item, changes), wearer)
+        })
+    }
+
+    fn assemble_inner(
+        &mut self,
+        catalog: &Catalog,
+        out: &mut Out,
+        (item, changes): (u32, &[Fitting]),
+        wearer: Option<&Wearer>,
+    ) -> Result<(), Notice> {
         let worn = self
             .items
             .get(&item)
@@ -831,13 +892,12 @@ impl State {
         let whole = item;
         let item = self.one_of(ObjectId(item)).0;
         let made = changes.iter().try_for_each(|change| match *change {
-            Fitting::In { upgrade, replace } => self.fit(catalog, out, item, upgrade, replace),
-            Fitting::Out(row) => self.unfit(catalog, out, item, row),
+            Fitting::In { upgrade, replace } => {
+                self.fit_inner(catalog, out, item, upgrade, replace)
+            }
+            Fitting::Out(row) => self.unfit_inner(catalog, out, item, row),
         });
-        if let Err(refused) = made {
-            (self.items, self.next_item) = before;
-            return Err(refused);
-        }
+        made?;
         if item != whole {
             let holder = self.items.get(&item).map_or(PARTY, |held| held.holder);
             self.add_to(catalog, item, holder);
