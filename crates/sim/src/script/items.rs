@@ -681,18 +681,12 @@ impl State {
         out: &mut Out,
         f: impl FnOnce(&mut Self, &mut Out) -> Result<T, Notice>,
     ) -> Result<T, Notice> {
-        let items = self.items.clone();
-        let next = self.next_item;
-        let kept = out.clone();
-        match f(self, out) {
-            Ok(value) => Ok(value),
-            Err(refused) => {
-                self.items = items;
-                self.next_item = next;
-                *out = kept;
-                Err(refused)
-            }
-        }
+        let mut trial = self.clone();
+        let mut trial_out = out.clone();
+        let value = f(&mut trial, &mut trial_out)?;
+        *self = trial;
+        *out = trial_out;
+        Ok(value)
     }
 
     /// What fitting `upgrade` (one the party carries) into `item` comes to
@@ -747,10 +741,14 @@ impl State {
             .filter(|template| *template != facts.template)
         {
             let colour = colour.to_string();
-            let had = catalog
-                .crystal_of(&facts.template)
-                .map(|crystal| crystal.template.clone())
-                .ok_or(refused.clone())?;
+            let old = catalog
+                .iter()
+                .filter(|crystal| crystal.recolours.contains(&facts.template))
+                .collect::<Vec<_>>();
+            if old.len() != 1 {
+                return Err(refused);
+            }
+            let had = old[0].template.clone();
             self.refit(out, item, |held| held.template = colour);
             if self.make_item(catalog, &had, PARTY, 1, None).is_none() {
                 return Err(refused);
