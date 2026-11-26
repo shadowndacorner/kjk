@@ -131,6 +131,14 @@ pub fn accounting() -> Result<String, String> {
     born_six.slots = 1 << slots::RIGHT_WEAPON;
     born_six.upgrade_level = 1;
     born_six.parts = vec!["ghost".into()];
+    // A fifth birth shape, where the template names an upgrade of the wrong kind
+    // in the colour slot. `make_item` copies it there without a fit test, but the
+    // slot's kind is still the slot's kind, so the part is not explained.
+    let mut born_seven = ItemFacts::plain("k1_born7");
+    born_seven.slot_kinds = vec![COLOUR_SLOT];
+    born_seven.slots = 1 << slots::RIGHT_WEAPON;
+    born_seven.upgrade_level = 1;
+    born_seven.parts = vec!["power".into()];
     // The colour slot's own kind at a level above the one its host takes, with no
     // colour route of its own: the slot route is the only way such a part could
     // be there, and `fit_inner` refuses it on the level, because only a crystal
@@ -212,6 +220,7 @@ pub fn accounting() -> Result<String, String> {
         born_four,
         born_five,
         born_six,
+        born_seven,
         big_crystal,
         listed,
         crystal,
@@ -402,7 +411,7 @@ pub fn accounting() -> Result<String, String> {
     let row1 = sim::inventory::upgrade_bit(1).ok_or("no row 1")?;
     // template, holder, worn slot, stack, never-spent, KOTOR rows, fitted parts
     type Stock = (&'static str, u32, Option<u8>, u16, bool, u32, Vec<String>);
-    let goods: [Stock; 53] = [
+    let goods: [Stock; 55] = [
         // 0: the party carries two medpacs.
         ("medpac", PARTY, None, 2, false, 0, Vec::new()),
         // 1: the player wears a saber with a colour crystal fitted in it.
@@ -438,7 +447,7 @@ pub fn accounting() -> Result<String, String> {
             Vec::new(),
         ),
         // 9: a template only the save's carried facts know.
-        ("ghost", PARTY, None, 1, false, 0, Vec::new()),
+        ("ghost", PARTY, None, 1, false, 0, vec!["crystal".into()]),
         // 10: picked up, though the save still lists it on the floor.
         ("loose", player, None, 1, false, 0, Vec::new()),
         // 11: held by a door, which does not hold items.
@@ -735,6 +744,22 @@ pub fn accounting() -> Result<String, String> {
             0,
             vec!["crystal_three".into()],
         ),
+        // 53: a colour slot holding an upgrade of the wrong kind that the host's
+        // own template names at that index. The template excuses the bench's level
+        // and colour-route rules, never the slot's kind.
+        ("k1_born7", PARTY, None, 1, false, 0, vec!["power".into()]),
+        // 54: two colour slots filled, the first by a crystal that settles the
+        // colour and the second by something that is no upgrade. Reading only the
+        // first slot would report the colour as settled in favour of a swap.
+        (
+            "saber_three",
+            PARTY,
+            None,
+            1,
+            false,
+            0,
+            vec!["crystal_three".into(), "medpac".into()],
+        ),
     ];
     for (n, (template, holder, slot, stack, infinite, upgrades, fitted)) in
         goods.into_iter().enumerate()
@@ -754,9 +779,20 @@ pub fn accounting() -> Result<String, String> {
     for id in [first + 5, first + 10, first + 13] {
         save.script.floor.insert(id, ("lev_m04aa".into(), lying));
     }
-    save.script
-        .known
-        .insert("ghost".into(), ItemFacts::plain("ghost"));
+    save.script.known.insert(
+        "ghost".into(),
+        ItemFacts {
+            // The save-carried template is a colour host with a colour part of
+            // its own: the report reads the colour of a slot from the facts the
+            // save carries as well as from the module's catalog, and it reads a
+            // host that only the save knows about.
+            slot_kinds: vec![COLOUR_SLOT],
+            slots: 1 << slots::RIGHT_WEAPON,
+            upgrade: Some((0, COLOUR_SLOT)),
+            recolours: vec!["k1_born6".into()],
+            ..ItemFacts::plain("ghost")
+        },
+    );
     // The screen's copy of one item that is already in the authority's table:
     // it is the same item, and it is counted once.
     save.snapshot.goods.items.push((
@@ -905,11 +941,14 @@ pub fn accounting() -> Result<String, String> {
             first + 9,
             Holding::PartyLoose,
             Facts::Carried,
-            Colour::None,
+            // A host only the save describes, with its colour slot filled by a
+            // crystal whose facts name a sibling hilt: the colour reads as settled
+            // and the part is not explained.
+            Colour::Fitted,
             1,
             0,
-            0,
-            0,
+            1,
+            1,
             0,
         ),
         row(
@@ -1391,7 +1430,9 @@ pub fn accounting() -> Result<String, String> {
             first + 51,
             Holding::PartyLoose,
             Facts::Catalog,
-            Colour::Unknown,
+            // The part's own facts come only from the save, and they name a colour
+            // route to its host, so the colour reads as settled.
+            Colour::Fitted,
             1,
             0,
             1,
@@ -1408,6 +1449,30 @@ pub fn accounting() -> Result<String, String> {
             1,
             0,
             1,
+            1,
+            0,
+        ),
+        // 53: a colour slot holding the wrong kind of upgrade, born there.
+        row(
+            first + 53,
+            Holding::PartyLoose,
+            Facts::Catalog,
+            Colour::Unknown,
+            1,
+            0,
+            1,
+            1,
+            0,
+        ),
+        // 54: two filled colour slots, one settling the colour and one not.
+        row(
+            first + 54,
+            Holding::PartyLoose,
+            Facts::Catalog,
+            Colour::Unknown,
+            1,
+            0,
+            2,
             1,
             0,
         ),
@@ -1429,6 +1494,10 @@ pub fn accounting() -> Result<String, String> {
         format!(
             "item {} carries KOTOR upgrade row 1, which its host's facts do not list",
             first + 4
+        ),
+        format!(
+            "item {} has the part crystal in colour slot 0, whose facts recolour saber, so the save does not say which hilt it was fitted in",
+            first + 9
         ),
         format!(
             "item {} is held by object {}, which does not hold items",
@@ -1504,6 +1573,14 @@ pub fn accounting() -> Result<String, String> {
         format!(
             "item {} has the part crystal_three in colour slot 0, whose facts recolour saber_three, so the save does not say which hilt it was fitted in",
             first + 52
+        ),
+        format!(
+            "item {} has the part power in slot 0, whose kind 1 is not the kind 255 its host declares",
+            first + 53
+        ),
+        format!(
+            "item {} has the part medpac in slot 1, which is not an upgrade this module or the save describes",
+            first + 54
         ),
         format!(
             "holder {player} has 2 items equipped in slot {}",
@@ -1649,12 +1726,14 @@ pub fn accounting() -> Result<String, String> {
         .filter(|(_, part, host, at)| !tenant_explained(part, host, *at))
         .map(|(id, _, _, _)| *id)
         .collect();
-    // Sixteen of the save's items hold a part in a colour slot. Six of them are
-    // parts a fit could have placed there, or a part the host's template starts
-    // the item holding. Ten are not: one is described nowhere, one recolours
-    // nothing at all and one is a colour kind one level above its host, two
-    // recolour hilts this module cannot use for colour, four recolour a sibling
-    // hilt instead of their host, and one is an upgrade of another kind entirely.
+    // Twenty of the save's items hold a part in a colour slot, and one of them
+    // holds two. Seven of the tenants are parts a fit could have placed there, or
+    // a part the host's template starts the item holding. Thirteen are not: one is
+    // described nowhere, one recolours nothing at all and one is a colour kind one
+    // level above its host, two recolour hilts this module cannot use for colour,
+    // five recolour a sibling hilt instead of their host, and three are upgrades of
+    // another kind or no upgrade at all in a colour slot. Item 54 appears on both
+    // lists, because its first colour slot is explained and its second is not.
     let tenants_as_expected = fitted_tenants
         == vec![
             first + 1,
@@ -1663,9 +1742,11 @@ pub fn accounting() -> Result<String, String> {
             first + 46,
             first + 50,
             first + 51,
+            first + 54,
         ]
         && unfit_tenants
             == vec![
+                first + 9,
                 first + 22,
                 first + 34,
                 first + 39,
@@ -1676,6 +1757,8 @@ pub fn accounting() -> Result<String, String> {
                 first + 48,
                 first + 49,
                 first + 52,
+                first + 53,
+                first + 54,
             ];
     let tenant_count = colour_tenants.len();
     let read_only =
@@ -1699,16 +1782,16 @@ pub fn accounting() -> Result<String, String> {
         && round_trip
         && read_only
         && named
-        && tenant_count == 16
+        && tenant_count == 20
         && tenants_as_expected
         && wrong.is_empty()
         && flags
         && seat_ok
         && puppet_is_a_creature
         && puppets_kept
-        && report.units == 56
+        && report.units == 58
         && report.infinite == 1
-        && report.party_loose == 31
+        && report.party_loose == 33
         && report.carried == 2
         && report.equipped == 6
         && report.floor == 1
@@ -1718,13 +1801,13 @@ pub fn accounting() -> Result<String, String> {
         && report.area_objects == 1
         && report.unknown == 4
         && report.kotor_rows == 3
-        && report.tsl_slots == 28
-        && report.parts_unresolved == 15
+        && report.tsl_slots == 32
+        && report.parts_unresolved == 18
         && report.rows_unlisted == 1
-        && report.colours == 9
-        && report.colour_fitted == 8
+        && report.colours == 11
+        && report.colour_fitted == 10
         && report.colour_by_template == 1
-        && report.colour_unknown == 9
+        && report.colour_unknown == 10
         && report.facts_carried == 1
         && report.facts_absent == 1
         && report.unknown_holders == vec![far, gone, area];
