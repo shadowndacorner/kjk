@@ -252,6 +252,17 @@ fn recolours_a_catalogued_hilt(catalog: &Catalog, host: &ItemFacts, part: &ItemF
     })
 }
 
+/// Whether `State::fit` would spend `part` on the hilt rather than on a slot:
+/// the colour route fires when the part's facts name a hilt of the host's base
+/// item other than the host itself, and that route changes the hilt's template
+/// and hands the crystal back. A part like that never reaches the colour slot a
+/// save may claim it sits in.
+fn recolours_another_hilt(catalog: &Catalog, host: &ItemFacts, part: &ItemFacts) -> bool {
+    catalog
+        .recolour(part, host.base_item)
+        .is_some_and(|made| made != host.template)
+}
+
 fn colour_sign(
     catalog: Option<&Catalog>,
     facts: Option<&ItemFacts>,
@@ -407,6 +418,12 @@ pub fn inspect(save: &Save, catalog: Option<&Catalog>) -> OwnershipReport {
                     (_, false, _) => Some(format!(
                         "item {id} has the part {part} in slot {slot}, which neither the module nor the save describes"
                     )),
+                    // A part that is no upgrade at all is explained only when the
+                    // host's own template starts an item holding it: `make_item`
+                    // and `new_item` copy `ItemFacts::parts` into the item with no
+                    // upgrade test, so such a part is in the save because the
+                    // template says it is.
+                    (Some(_), true, None) if from_the_template => None,
                     // A colour slot is held to the same rule as any other slot,
                     // because that is what the engine's own fit does. `fit` takes
                     // the colour route only when the part recolours a hilt other
@@ -421,6 +438,22 @@ pub fn inspect(save: &Save, catalog: Option<&Catalog>) -> OwnershipReport {
                     (Some(kind), true, Some((_, part_kind))) if part_kind != kind => Some(format!(
                         "item {id} has the part {part} in slot {slot}, whose kind {part_kind} is not the kind {kind} its host declares"
                     )),
+                    // A colour slot also has to hold a part the slot route could
+                    // have left there. A part whose facts would take the colour
+                    // route changed the hilt instead, so it is not this slot's
+                    // tenant, and the save that names it here claims a fitted part
+                    // the engine could not have fitted.
+                    (Some(COLOUR_SLOT), true, Some((_, _)))
+                        if described.is_some_and(|part_facts| {
+                            facts.is_some_and(|host| {
+                                recolours_another_hilt(catalog, host, part_facts)
+                            })
+                        }) =>
+                    {
+                        Some(format!(
+                            "item {id} has the part {part} in colour slot {slot}, which would recolour its host instead of filling the slot"
+                        ))
+                    }
                     // And the host has to be able to take the part: one of a
                     // level above the host's own could not have been fitted
                     // there, unless it is a crystal, which any hilt takes.

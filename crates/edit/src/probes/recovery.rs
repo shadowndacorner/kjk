@@ -99,6 +99,14 @@ pub fn accounting() -> Result<String, String> {
     born_two.slots = 1 << slots::RIGHT_WEAPON;
     born_two.upgrade_level = 1;
     born_two.parts = vec![String::new(), "big_power".into(), String::new()];
+    // A host whose template starts it holding something that is no upgrade at
+    // all: `make_item` copies the template's parts with no upgrade test, so that
+    // part is in the save because the template says it is.
+    let mut born_three = ItemFacts::plain("k1_born3");
+    born_three.slot_kinds = vec![COLOUR_SLOT, 1];
+    born_three.slots = 1 << slots::RIGHT_WEAPON;
+    born_three.upgrade_level = 1;
+    born_three.parts = vec![String::new(), "medpac".into()];
     let mut listed = ItemFacts::plain("k1_listed");
     listed.upgrades = vec![sim::inventory::properties::Upgrade {
         row: 1,
@@ -169,6 +177,7 @@ pub fn accounting() -> Result<String, String> {
         equal_part,
         born_host,
         born_two,
+        born_three,
         listed,
         crystal,
         crystal_three,
@@ -358,7 +367,7 @@ pub fn accounting() -> Result<String, String> {
     let row1 = sim::inventory::upgrade_bit(1).ok_or("no row 1")?;
     // template, holder, worn slot, stack, never-spent, KOTOR rows, fitted parts
     type Stock = (&'static str, u32, Option<u8>, u16, bool, u32, Vec<String>);
-    let goods: [Stock; 42] = [
+    let goods: [Stock; 46] = [
         // 0: the party carries two medpacs.
         ("medpac", PARTY, None, 2, false, 0, Vec::new()),
         // 1: the player wears a saber with a colour crystal fitted in it.
@@ -582,6 +591,44 @@ pub fn accounting() -> Result<String, String> {
             false,
             0,
             vec![String::new(), String::new(), "big_power".into()],
+        ),
+        // 42: a colour slot holding a crystal that recolours a sibling hilt of
+        // the same base item. The engine's colour route would have spent it on
+        // the hilt and never filled the slot, so this save claims a fitted part
+        // it cannot have fitted. The colour itself still reads as settled.
+        (
+            "saber_three",
+            PARTY,
+            None,
+            1,
+            false,
+            0,
+            vec![String::new(), "crystal".into()],
+        ),
+        // 43: a colour slot holding an upgrade of another kind entirely, which
+        // no route puts in a colour slot.
+        ("saber", PARTY, None, 1, false, 0, vec!["power".into()]),
+        // 44: a part that is no upgrade at all, held at the index the host's own
+        // template names it at, so it came with the item.
+        (
+            "k1_born3",
+            PARTY,
+            None,
+            1,
+            false,
+            0,
+            vec![String::new(), "medpac".into()],
+        ),
+        // 45: the above-level part of item 41 at the index its template does
+        // name it at: that one came with the item.
+        (
+            "k1_born2",
+            PARTY,
+            None,
+            1,
+            false,
+            0,
+            vec![String::new(), "big_power".into(), String::new()],
         ),
     ];
     for (n, (template, holder, slot, stack, infinite, upgrades, fitted)) in
@@ -1121,6 +1168,55 @@ pub fn accounting() -> Result<String, String> {
             1,
             0,
         ),
+        // 42: a colour slot holding a crystal the colour route would have spent
+        // on the hilt: the colour reads as settled, the part is unexplained.
+        row(
+            first + 42,
+            Holding::PartyLoose,
+            Facts::Catalog,
+            Colour::Fitted,
+            1,
+            0,
+            1,
+            1,
+            0,
+        ),
+        // 43: a colour slot holding an upgrade of the wrong kind.
+        row(
+            first + 43,
+            Holding::PartyLoose,
+            Facts::Catalog,
+            Colour::Unknown,
+            1,
+            0,
+            1,
+            1,
+            0,
+        ),
+        // 44 and 45: parts that came with the host's template, at the index the
+        // template names them at, so neither is an anomaly.
+        row(
+            first + 44,
+            Holding::PartyLoose,
+            Facts::Catalog,
+            Colour::None,
+            1,
+            0,
+            1,
+            0,
+            0,
+        ),
+        row(
+            first + 45,
+            Holding::PartyLoose,
+            Facts::Catalog,
+            Colour::None,
+            1,
+            0,
+            1,
+            0,
+            0,
+        ),
         // 38: a puppet that has not joined is one of the area's creatures.
         row(
             first + 38,
@@ -1190,6 +1286,14 @@ pub fn accounting() -> Result<String, String> {
         format!(
             "item {} has the part big_power in slot 2, whose level 2 is above the level 1 its host takes",
             first + 41
+        ),
+        format!(
+            "item {} has the part crystal in colour slot 1, which would recolour its host instead of filling the slot",
+            first + 42
+        ),
+        format!(
+            "item {} has the part power in slot 0, whose kind 1 is not the kind 255 its host declares",
+            first + 43
         ),
         format!(
             "holder {player} has 2 items equipped in slot {}",
@@ -1263,32 +1367,74 @@ pub fn accounting() -> Result<String, String> {
             ));
         }
     }
-    // The colour-slot tenants this save holds have to be parts a real fit could
-    // have put there. `State::fit` takes the colour route when the part recolours
-    // a hilt other than the host, and that route changes the hilt's template
-    // instead of filling a slot; what is left to the slot route has to be an
-    // upgrade of the slot's kind. So each tenant has to name the host itself (or
-    // no hilt at all) among the hilts it recolours, and has to be an upgrade of
-    // kind `COLOUR_SLOT`. The three tenants the report calls unexplained fail the
-    // same test, which is why they are anomalies rather than fitted colour parts.
-    let colour_tenants_fit = [("crystal", "saber"), ("crystal_three", "saber_three")]
+    // The colour tenants are read from the items in the save, not from the
+    // fixture table, and each is held to the engine's own two conditions for
+    // putting a part in a colour slot. `State::fit` takes the colour route when
+    // the part's facts name a hilt of the host's base item other than the host,
+    // and that route changes the hilt's template and hands the crystal back; what
+    // is left to the slot route has to be an upgrade whose kind is the colour
+    // slot's kind. The tenants the report calls unexplained have to fail one of
+    // those two conditions, which is what makes them anomalies rather than fitted
+    // colour parts.
+    let colour_tenants: Vec<(u32, String, String)> = back
+        .script
+        .items
         .iter()
-        .all(|(part, host)| {
-            let part = catalog.get(part).expect("the colour part");
-            let host = catalog.get(host).expect("the hilt");
-            part.upgrade == Some((0, COLOUR_SLOT))
-                && catalog
-                    .recolour(part, host.base_item)
-                    .is_none_or(|made| made == host.template)
-        });
-    let colour_anomalies_do_not_fit =
-        ["medpac", "far_crystal", "alien_crystal"]
-            .iter()
-            .all(|part| {
-                catalog
-                    .get(part)
-                    .is_some_and(|facts| facts.upgrade.is_none())
-            });
+        .flat_map(|(id, held)| {
+            let Some(host) = catalog.get(&held.template) else {
+                return Vec::new();
+            };
+            host.slot_kinds
+                .iter()
+                .enumerate()
+                .filter(|(_, kind)| **kind == COLOUR_SLOT)
+                .filter_map(|(at, _)| {
+                    held.fitted
+                        .get(at)
+                        .filter(|part| !part.is_empty())
+                        .map(|part| (*id, part.clone(), host.template.clone()))
+                })
+                .collect()
+        })
+        .collect();
+    let tenant_could_be_fitted = |part: &str, host: &str| {
+        catalog.get(part).is_some_and(|part_facts| {
+            catalog.get(host).is_some_and(|host_facts| {
+                part_facts
+                    .upgrade
+                    .is_some_and(|(_, kind)| kind == COLOUR_SLOT)
+                    && catalog
+                        .recolour(part_facts, host_facts.base_item)
+                        .is_none_or(|made| made == host_facts.template)
+            })
+        })
+    };
+    let fitted_tenants: Vec<u32> = colour_tenants
+        .iter()
+        .filter(|(_, part, host)| tenant_could_be_fitted(part, host))
+        .map(|(id, _, _)| *id)
+        .collect();
+    let unfit_tenants: Vec<u32> = colour_tenants
+        .iter()
+        .filter(|(_, part, host)| !tenant_could_be_fitted(part, host))
+        .map(|(id, _, _)| *id)
+        .collect();
+    // Nine of the save's items hold a part in a colour slot. Three of them are
+    // parts a fit could have placed there. Six are not: one is described nowhere,
+    // one recolours nothing, two recolour hilts this module cannot use for colour,
+    // one recolours a sibling hilt instead of its host, and one is an upgrade of
+    // another kind entirely.
+    let tenants_as_expected = fitted_tenants == vec![first + 1, first + 21, first + 28]
+        && unfit_tenants
+            == vec![
+                first + 22,
+                first + 34,
+                first + 39,
+                first + 40,
+                first + 42,
+                first + 43,
+            ];
+    let tenant_count = colour_tenants.len();
     let read_only =
         back == before && back.encode() == back_bytes && back.script.items.stamp() == back_stamp;
     let named = truth.len() == report.items.len();
@@ -1310,16 +1456,16 @@ pub fn accounting() -> Result<String, String> {
         && round_trip
         && read_only
         && named
-        && colour_tenants_fit
-        && colour_anomalies_do_not_fit
+        && tenant_count == 9
+        && tenants_as_expected
         && wrong.is_empty()
         && flags
         && seat_ok
         && puppet_is_a_creature
         && puppets_kept
-        && report.units == 45
+        && report.units == 49
         && report.infinite == 1
-        && report.party_loose == 20
+        && report.party_loose == 24
         && report.carried == 2
         && report.equipped == 6
         && report.floor == 1
@@ -1329,13 +1475,13 @@ pub fn accounting() -> Result<String, String> {
         && report.area_objects == 1
         && report.unknown == 4
         && report.kotor_rows == 3
-        && report.tsl_slots == 17
-        && report.parts_unresolved == 9
+        && report.tsl_slots == 21
+        && report.parts_unresolved == 11
         && report.rows_unlisted == 1
-        && report.colours == 4
-        && report.colour_fitted == 3
+        && report.colours == 5
+        && report.colour_fitted == 4
         && report.colour_by_template == 1
-        && report.colour_unknown == 5
+        && report.colour_unknown == 6
         && report.facts_carried == 1
         && report.facts_absent == 1
         && report.unknown_holders == vec![far, gone, area];
@@ -1383,10 +1529,10 @@ pub fn accounting() -> Result<String, String> {
         report.items.len(),
         report.ambiguities.len()
     );
-    let summary_named_by_the_report = report_summary_matches(&summary, 42, 15);
+    let summary_named_by_the_report = report_summary_matches(&summary, 46, 17);
     if !totals || !blind_facts || !summary_named_by_the_report || !wrong.is_empty() {
         return Err(format!(
-            "read {read}, round trip {round_trip}, read only {read_only}, all items named {named}, colour parts a fit could place {colour_tenants_fit}, colour anomalies not placeable {colour_anomalies_do_not_fit}, seat holder {seat_ok}, flags {flags}, blind {blind_facts}, summary {summary_named_by_the_report}, wrong {wrong:?}, items {}, units {}, infinite {}, party {}, carried {}, equipped {}, floor {}, containers {}, store {}, creatures {}, area objects {}, unknown {}, rows {}, slots {}, parts {}, rows unlisted {}, colours {} ({} fitted, {} by template, {} unknown), facts carried {}, facts absent {}, holders {:?}, ambiguities {:?}",
+            "read {read}, round trip {round_trip}, read only {read_only}, all items named {named}, colour tenants as expected {tenants_as_expected}, colour tenants counted {tenant_count}, seat holder {seat_ok}, flags {flags}, blind {blind_facts}, summary {summary_named_by_the_report}, wrong {wrong:?}, items {}, units {}, infinite {}, party {}, carried {}, equipped {}, floor {}, containers {}, store {}, creatures {}, area objects {}, unknown {}, rows {}, slots {}, parts {}, rows unlisted {}, colours {} ({} fitted, {} by template, {} unknown), facts carried {}, facts absent {}, holders {:?}, ambiguities {:?}",
             report.items.len(),
             report.units,
             report.infinite,
