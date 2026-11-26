@@ -689,6 +689,43 @@ impl State {
         Ok(value)
     }
 
+    /// The kind and level of the part `fitted` names, when every description
+    /// of it agrees. A TSL save slot names a fitted part by its bare resref,
+    /// so one part may be described by the module's catalog and by the facts
+    /// carried forward from the module it was fitted in (`carry_known`). A
+    /// module's own template hides the shared template of its resref
+    /// (`Catalog::get`), so the two can name different parts. When they
+    /// disagree the part's origin is unrecoverable, and this says none.
+    fn fitted_part(
+        known: &std::collections::BTreeMap<String, ItemFacts>,
+        catalog: &Catalog,
+        fitted: &str,
+    ) -> Option<(u8, u8)> {
+        let mut agreed: Option<(u8, u8)> = None;
+        let mut see = |facts: &ItemFacts| match facts.upgrade {
+            None => false,
+            Some((_, kind)) => {
+                let one = (kind, facts.upgrade_level);
+                match agreed {
+                    None => {
+                        agreed = Some(one);
+                        true
+                    }
+                    Some(was) => was == one,
+                }
+            }
+        };
+        if let Some(facts) = catalog.get(fitted) && !see(facts) {
+            return None;
+        }
+        for (template, facts) in known {
+            if (template == fitted || resref_of(template) == fitted) && !see(facts) {
+                return None;
+            }
+        }
+        agreed
+    }
+
     /// Whether target facts and new facts keep each installed K1 row and TSL
     /// slot with the same part identity and slot kind. A part's facts come
     /// from the module's catalog or from `known`: a part fitted in an earlier
@@ -726,31 +763,11 @@ impl State {
             let Some(new_kind) = new_facts.slot_kinds.get(slot) else {
                 return false;
             };
-            // A fitted part is named by its template, and TSL's save slots
-            // name it by a bare resref. Resolve it to one part: the module's
-            // catalog, then a carried-forward template that matches exactly,
-            // then a carried template whose resref matches. Two carried
-            // templates answering for one resref describe different parts, so
-            // the swap cannot be certified and refuses.
-            let part_facts = catalog
-                .get(part)
-                .or_else(|| self.known.get(part))
-                .or_else(|| {
-                    let same: Vec<&ItemFacts> = self
-                        .known
-                        .values()
-                        .filter(|facts| resref_of(&facts.template) == part)
-                        .collect();
-                    if same.len() == 1 {
-                        same.into_iter().next()
-                    } else {
-                        None
-                    }
-                });
-            let Some(part_facts) = part_facts else {
-                return false;
-            };
-            let Some((_, part_kind)) = part_facts.upgrade else {
+            // A TSL save slot names the part by its bare resref, so the
+            // catalog and the carried facts can both answer for it. They have
+            // to agree on what the part is before the swap can be certified.
+            let Some((part_kind, part_level)) = Self::fitted_part(&self.known, catalog, part)
+            else {
                 return false;
             };
             if part_kind != *old_kind || part_kind != *new_kind {
@@ -759,7 +776,7 @@ impl State {
             // As `fit_inner`'s rule: an upgrade above the host's level
             // refuses, a crystal of any level fits (`CRYSTAL`, as TSL's
             // bench lists them).
-            if part_kind != CRYSTAL && part_facts.upgrade_level > new_facts.upgrade_level {
+            if part_kind != CRYSTAL && part_level > new_facts.upgrade_level {
                 return false;
             }
         }
