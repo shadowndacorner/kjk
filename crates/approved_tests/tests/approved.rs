@@ -4409,13 +4409,14 @@ fn workshop_return_atomic() {
 /// A missing old colour or template mapping refuses the workbench
 /// transaction without losing the installed item. Approved by the
 /// consolidated owner pass on 2026-11-24 as
-/// `workshop_colour_mapping_refused`.
+/// `workshop_colour_mapping_refused`. The count is the exact number of
+/// checks the group pushes, so dropping one turns this test red.
 #[test]
 fn workshop_colour_mapping_refused() {
     probed(
         "workshop colour mapping refused",
         &sim::workshop_probes::colour_refusal_probes(),
-        20,
+        22,
     );
 }
 

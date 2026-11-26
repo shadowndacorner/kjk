@@ -580,14 +580,21 @@ fn kind_module(which: &str, hilt_kind: u8, part_kind: u8) -> Catalog {
 }
 
 /// The same three pieces again, with the two hilts taking different kinds in
-/// slot 1: the hilt that carries a fitted part takes `old_kind`, the hilt a
-/// colour swap would change it into takes `new_kind`, and the module's own file
-/// of the fitted resref is an upgrade of kind `part_kind`. A module like this is
-/// what makes the old hilt's own slot kinds matter, because the part and the new
-/// hilt can agree while the hilt that carries the part disagrees.
-fn split_hilt_module(which: &str, old_kind: u8, new_kind: u8, part_kind: u8) -> Catalog {
-    let old_saber = host("slot_saber", vec![0, old_kind], slots::RIGHT_WEAPON);
-    let new_saber = host("slot_saber_red", vec![0, new_kind], slots::RIGHT_WEAPON);
+/// slot 1: the hilt that carries a fitted part takes `old_kinds`, the hilt a
+/// colour swap would change it into takes `new_kinds`, and the module's own file
+/// of the fitted resref is an upgrade of kind `part_kind` at `part_level`. A
+/// module like this is what makes the old hilt's own slot kinds matter, because
+/// the part and the new hilt can agree while the hilt that carries the part
+/// disagrees.
+fn split_hilt_module(
+    which: &str,
+    old_kinds: &[u8],
+    new_kinds: &[u8],
+    part_kind: u8,
+    part_level: u8,
+) -> Catalog {
+    let old_saber = host("slot_saber", old_kinds.to_vec(), slots::RIGHT_WEAPON);
+    let new_saber = host("slot_saber_red", new_kinds.to_vec(), slots::RIGHT_WEAPON);
     let old = ItemFacts {
         recolours: vec!["slot_saber".into()],
         ..part("old_crystal", 0, 0, Vec::new())
@@ -602,7 +609,36 @@ fn split_hilt_module(which: &str, old_kind: u8, new_kind: u8, part_kind: u8) -> 
         new_saber,
         old,
         new,
-        part(&own, part_kind, 1, Vec::new()),
+        part(&own, part_kind, part_level, Vec::new()),
+    ])
+}
+
+/// The hilt, its colour crystals and the module's own file of the fitted resref,
+/// as a module that starts its hilt holding a crystal of `crystal_level` sees
+/// them: both hilts take crystals in slot 0 and kind `other_kind` in slot 1, and
+/// the module's own part is a crystal at that level. A crystal of a level above
+/// its host's own is a legal fit (`fit_inner` exempts crystals from the level
+/// rule), which is what makes the old hilt's slot kinds the only thing left to
+/// refuse a swap that carries one.
+fn crystal_module(which: &str, other_kind: u8, crystal_level: u8) -> Catalog {
+    let kinds = vec![0, other_kind];
+    let old_saber = host("slot_saber", kinds.clone(), slots::RIGHT_WEAPON);
+    let new_saber = host("slot_saber_red", kinds, slots::RIGHT_WEAPON);
+    let old = ItemFacts {
+        recolours: vec!["slot_saber".into()],
+        ..part("old_crystal", 0, 0, Vec::new())
+    };
+    let new = ItemFacts {
+        recolours: vec!["slot_saber_red".into()],
+        ..part("new_crystal", 0, 0, Vec::new())
+    };
+    let own = crate::inventory::own_template("shared_part", which);
+    Catalog::new([
+        old_saber,
+        new_saber,
+        old,
+        new,
+        part(&own, crate::inventory::CRYSTAL, crystal_level, Vec::new()),
     ])
 }
 
@@ -2426,7 +2462,7 @@ fn colour_refusal_checks() -> Checks {
     // template, so the old hilt's current facts are module b's. A check that
     // compared the fitted part with the new hilt alone would certify this swap.
     let left = kind_module("a", 1, 1);
-    let entered = split_hilt_module("b", 2, 1, 1);
+    let entered = split_hilt_module("b", &[0, 2], &[0, 1], 1, 1);
     let mut world = colour_world(left.clone());
     let saber = give_with(&mut world, &left, "slot_saber", PARTY, None);
     let mut state = world.script_state().clone();
@@ -2482,6 +2518,147 @@ fn colour_refusal_checks() -> Checks {
                 && swapped,
             format!(
                 "fit {fitted:?}, the slot holds module a's own template {written}, holds a {holds_a}, a takes kind 1 and b's hilt of that resref takes kind 2 while its new hilt takes kind 1 {shape}, swap {swap}, the slot names the part {named}, result {result:?}, kept {kept}, nothing swapped {swapped}"
+            ),
+        ),
+    ));
+
+    // A crystal is exempt from the level rule, so neither the level nor the new
+    // hilt refuses this swap either: only the hilt that carries the crystal can.
+    // Module a's hilt takes crystals in slot 0, and a crystal of a level above its
+    // host's own is a legal fit there, because `fit_inner` exempts crystals from
+    // the level test. The save then reaches module b, whose hilt of the same
+    // resref takes kind 2 in slot 0 and whose new hilt takes crystals there. Both
+    // descriptions of the crystal agree that it is a crystal of level 3, and a
+    // crystal's level is never the reason to refuse a swap, so a guard that let
+    // crystals past the old hilt's slot kind would certify it.
+    let left = crystal_module("a", 1, 3);
+    let entered = split_hilt_module("b", &[2, 1], &[0, 1], crate::inventory::CRYSTAL, 3);
+    let mut world = colour_world(left.clone());
+    let saber = give_with(&mut world, &left, "slot_saber", PARTY, None);
+    let mut state = world.script_state().clone();
+    let given = state
+        .make_item(&left, "shared_part", PARTY, 1, None)
+        .expect("the crystal to fit")
+        .0;
+    let mut fitting = seeded_out();
+    let fitted = state.fit(&left, &mut fitting, saber, given, Some(0));
+    let written = state
+        .items
+        .get(&saber)
+        .is_some_and(|held| held.fitted.first().map(String::as_str) == Some("shared_part@a"));
+    let part_a = own_part(&left, "shared_part", "a");
+    let part_b = own_part(&entered, "shared_part", "b");
+    state.carry_known(&left, &entered);
+    let holds_a = state.known.get(&part_a.template) == Some(&part_a);
+    let shape = fitted.is_ok()
+        && written
+        && part_a.upgrade == Some((0, crate::inventory::CRYSTAL))
+        && part_a.upgrade_level == 3
+        && part_b.upgrade == Some((0, crate::inventory::CRYSTAL))
+        && part_b.upgrade_level == 3
+        && entered.get("shared_part") == Some(&part_b)
+        && descriptions_of(&part_a, &part_b, "shared_part", false)
+        && hilt_could_take(&left, "slot_saber", 0, &part_a)
+        && hilt_level(&left, "slot_saber") == 1
+        && slot_takes(&entered, "slot_saber", 0, 2)
+        && slot_takes(&entered, "slot_saber_red", 0, crate::inventory::CRYSTAL)
+        && hilt_level(&entered, "slot_saber_red") == 1;
+    let new = state
+        .make_item(&entered, "new_crystal", PARTY, 1, None)
+        .expect("the crystal for the swap")
+        .0;
+    world.set_script_state(state.clone());
+    let before = state.clone();
+    let mut out = seeded_out();
+    let before_out = out.clone();
+    let result = state.fit(&entered, &mut out, saber, new, None);
+    let kept = state == before && out_same(&out, &before_out);
+    world.set_script_state(state);
+    let swapped = nothing_swapped(&world, "new_crystal", "old_crystal");
+    let swap = swap_reaches_preserves(&entered, &before, saber, new, "slot_saber_red");
+    let named = fitted_names(&before, saber, 0, &fit_writes("shared_part", "a"));
+    checks.push((
+        "a colour swap refuses when the module entered reads the hilt that carries a crystal as taking another kind in that slot",
+        check(
+            shape
+                && holds_a
+                && swap
+                && named
+                && result == Err(Notice::CannotUpgrade)
+                && kept
+                && swapped,
+            format!(
+                "fit {fitted:?}, the slot holds module a's own template {written}, holds a {holds_a}, a takes crystals and its host is level 1 while the crystal is level 3, and b's hilt of that resref takes kind 2 in slot 0 while its new hilt takes crystals {shape}, swap {swap}, the slot names the part {named}, result {result:?}, kept {kept}, nothing swapped {swapped}"
+            ),
+        ),
+    ));
+
+    // The same refusal on the other name a fitted part travels under. A module
+    // that keeps no marking of its own on the resref writes the bare resref into
+    // the save slot, and that is what a real module's save holds. Module a's hilt
+    // takes kind 1 in slot 1 and its file of the resref is a kind 1 upgrade at
+    // level 1, so the fit is legal; module b's hilt of the same resref takes kind
+    // 2 there, its new hilt takes kind 1, and both descriptions of the part agree
+    // it is kind 1 at a level the new hilt takes. Only the old hilt's own facts
+    // refuse it, and a guard that read the current hilt only for a name carrying
+    // a module's marking would certify the swap.
+    let left = plain_shared_module(1);
+    let entered = split_hilt_module("b", &[0, 2], &[0, 1], 1, 1);
+    let mut world = colour_world(left.clone());
+    let saber = give_with(&mut world, &left, "slot_saber", PARTY, None);
+    let mut state = world.script_state().clone();
+    let given = state
+        .make_item(&left, "shared_part", PARTY, 1, None)
+        .expect("the part to fit")
+        .0;
+    let mut fitting = seeded_out();
+    let fitted = state.fit(&left, &mut fitting, saber, given, Some(1));
+    let written = state
+        .items
+        .get(&saber)
+        .is_some_and(|held| held.fitted.get(1).map(String::as_str) == Some("shared_part"));
+    let part_a = left.get("shared_part").expect("module a's part").clone();
+    let part_b = own_part(&entered, "shared_part", "b");
+    state.carry_known(&left, &entered);
+    let holds_a = state.known.get(&part_a.template) == Some(&part_a);
+    let shape = fitted.is_ok()
+        && written
+        && part_a.upgrade == Some((0, 1))
+        && part_a.upgrade_level == 1
+        && part_b.upgrade == Some((0, 1))
+        && part_b.upgrade_level == 1
+        && entered.get("shared_part") == Some(&part_b)
+        && descriptions_of(&part_a, &part_b, "shared_part", false)
+        && hilt_could_take(&left, "slot_saber", 1, &part_a)
+        && slot_takes(&entered, "slot_saber", 1, 2)
+        && slot_takes(&entered, "slot_saber_red", 1, 1)
+        && hilt_level(&entered, "slot_saber_red") == 1;
+    let new = state
+        .make_item(&entered, "new_crystal", PARTY, 1, None)
+        .expect("the crystal for the swap")
+        .0;
+    world.set_script_state(state.clone());
+    let before = state.clone();
+    let mut out = seeded_out();
+    let before_out = out.clone();
+    let result = state.fit(&entered, &mut out, saber, new, None);
+    let kept = state == before && out_same(&out, &before_out);
+    world.set_script_state(state);
+    let swapped = nothing_swapped(&world, "new_crystal", "old_crystal");
+    let swap = swap_reaches_preserves(&entered, &before, saber, new, "slot_saber_red");
+    let named = fitted_names(&before, saber, 1, "shared_part");
+    checks.push((
+        "a colour swap refuses on a bare fitted resref when the module entered reads the hilt that carries it as taking another kind in that slot",
+        check(
+            shape
+                && holds_a
+                && swap
+                && named
+                && result == Err(Notice::CannotUpgrade)
+                && kept
+                && swapped,
+            format!(
+                "fit {fitted:?}, the slot holds the bare resref {written}, holds a {holds_a}, a takes kind 1 and b's hilt of that resref takes kind 2 while its new hilt takes kind 1 {shape}, swap {swap}, the slot names the part {named}, result {result:?}, kept {kept}, nothing swapped {swapped}"
             ),
         ),
     ));
