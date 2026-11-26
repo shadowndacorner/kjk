@@ -13,14 +13,28 @@ use sim::module::ObjectKind;
 /// companion kept while away, an item on the area's books that is not lying on
 /// the floor, a stack of three identical sabers with a crystal in each, parts
 /// and rows nobody describes, a colour swap that changed the hilt's own
-/// template, an item listed twice, and a stack of none.
+/// template, an item listed twice, and a stack of none. It also holds a hilt
+/// with two colour slots whose second one is filled, a part in a slot its host
+/// declares that is no upgrade at all, a part of a kind its host's slot does
+/// not take, a part in a slot the host's facts do not declare, an item held by
+/// a wanderer, and a puppet who has joined the party and wears something.
 ///
 /// Every item is checked by id against ground truth after the save has been
 /// written and read back, and the anomalies are checked as a list, not as a
 /// count.
 pub fn accounting() -> Result<String, String> {
     let (_, mut save) = sim::fixtures::kitchen_sink();
-    let player = seat_holder(&save, sim::Seat(0)).ok_or("no first seat")?.0;
+    // The first seat's own body, read from the save and not from the helper
+    // under test: the accounting is judged against the save, and the helper is
+    // checked against it separately.
+    let player = save
+        .snapshot
+        .entities
+        .iter()
+        .find(|entity| entity.kind == sim::Kind::Avatar(sim::Seat(0)))
+        .ok_or("the fixture has no first seat")?
+        .id
+        .0;
     // The tables: a medpac that stacks to ten, two sabers with a colour slot,
     // a hilt whose colour is carried by its own template, a KOTOR 1 host whose
     // upgrade rows are listed and one whose rows are not, and the parts.
@@ -35,6 +49,14 @@ pub fn accounting() -> Result<String, String> {
     let mut saber_two = ItemFacts::plain("saber_two");
     saber_two.slot_kinds = vec![COLOUR_SLOT];
     saber_two.slots = 1 << slots::RIGHT_WEAPON;
+    let mut saber_three = ItemFacts::plain("saber_three");
+    saber_three.slot_kinds = vec![COLOUR_SLOT, COLOUR_SLOT];
+    saber_three.slots = 1 << slots::RIGHT_WEAPON;
+    let mut mixed = ItemFacts::plain("k1_slots");
+    mixed.slot_kinds = vec![COLOUR_SLOT, 0];
+    mixed.slots = 1 << slots::RIGHT_WEAPON;
+    let mut power = ItemFacts::plain("power");
+    power.upgrade = Some((0, 1));
     let mut listed = ItemFacts::plain("k1_listed");
     listed.upgrades = vec![sim::inventory::properties::Upgrade {
         row: 1,
@@ -56,6 +78,9 @@ pub fn accounting() -> Result<String, String> {
         saber,
         saber_alt,
         saber_two,
+        saber_three,
+        mixed,
+        power,
         listed,
         crystal,
         alt_crystal,
@@ -183,12 +208,42 @@ pub fn accounting() -> Result<String, String> {
     }]);
     // A save numbers its items from `FIRST_ITEM`, the first id the sim gives.
     let first = sim::inventory::FIRST_ITEM;
+    // A wanderer is an entity the save names, and it is not an object that
+    // holds items: an item held by it is unresolved, but the save does answer
+    // for the holder's id.
+    let wanderer = save.snapshot.take_id().0;
+    save.snapshot.entities.push(sim::EntityState {
+        id: sim::SimId(wanderer),
+        kind: sim::Kind::Wanderer,
+        position: body.position,
+        velocity: [0.0; 3],
+        player: None,
+        retarget_ms: 0,
+        life_ms: None,
+        going: None,
+        object: None,
+        fighter: None,
+        sheet: None,
+        missile: None,
+    });
+    // A TSL puppet who has joined the party wears things under its own object
+    // id, which only the party table names.
+    let puppet = save.snapshot.take_id().0;
+    save.script.party.puppets.insert(
+        0,
+        sim::script::party::Puppet {
+            template: "pup0".into(),
+            object: Some(puppet),
+            owner: Some(0),
+            joined: true,
+        },
+    );
     let (gone, far) = (0x7d00_9999, 0x7d00_8888);
     let area = sim::script::AREA.0;
     let row1 = sim::inventory::upgrade_bit(1).ok_or("no row 1")?;
     // template, holder, worn slot, stack, never-spent, KOTOR rows, fitted parts
     type Stock = (&'static str, u32, Option<u8>, u16, bool, u32, Vec<String>);
-    let goods: [Stock; 28] = [
+    let goods: [Stock; 33] = [
         // 0: the party carries two medpacs.
         ("medpac", PARTY, None, 2, false, 0, Vec::new()),
         // 1: the player wears a saber with a colour crystal fitted in it.
@@ -283,6 +338,42 @@ pub fn accounting() -> Result<String, String> {
             Vec::new(),
         ),
         ("worn", player, Some(slots::HANDS), 1, false, 0, Vec::new()),
+        // 28: a hilt with two colour slots, the first empty and the second
+        // filled: the colour sign has to look at both.
+        (
+            "saber_three",
+            PARTY,
+            None,
+            1,
+            false,
+            0,
+            vec![String::new(), "crystal".into()],
+        ),
+        // 29: a part in a slot the host declares, where the part is described
+        // but is no upgrade at all.
+        (
+            "k1_slots",
+            PARTY,
+            None,
+            1,
+            false,
+            0,
+            vec![String::new(), "medpac".into()],
+        ),
+        // 30: a part whose kind is not the kind the host's slot takes.
+        (
+            "k1_slots",
+            PARTY,
+            None,
+            1,
+            false,
+            0,
+            vec![String::new(), "power".into()],
+        ),
+        // 31: held by a wanderer.
+        ("medpac", wanderer, None, 1, false, 0, Vec::new()),
+        // 32: worn by a puppet who has joined the party.
+        ("worn", puppet, Some(slots::BELT), 1, false, 0, Vec::new()),
     ];
     for (n, (template, holder, slot, stack, infinite, upgrades, fitted)) in
         goods.into_iter().enumerate()
@@ -614,6 +705,8 @@ pub fn accounting() -> Result<String, String> {
             0,
             0,
         ),
+        // A KOTOR 1 host with a TSL part fitted: its facts declare no slot at
+        // all, so the part is not accounted for.
         row(
             first + 24,
             Holding::PartyLoose,
@@ -622,7 +715,7 @@ pub fn accounting() -> Result<String, String> {
             1,
             1,
             1,
-            0,
+            1,
             0,
         ),
         // A stack of none still stands for one row of the save's item table.
@@ -659,6 +752,65 @@ pub fn accounting() -> Result<String, String> {
             0,
             0,
         ),
+        // 28: the colour part sits in the second of two colour slots.
+        row(
+            first + 28,
+            Holding::PartyLoose,
+            Facts::Catalog,
+            Colour::Fitted,
+            1,
+            0,
+            1,
+            0,
+            0,
+        ),
+        // 29 and 30: parts the host's slot cannot take.
+        row(
+            first + 29,
+            Holding::PartyLoose,
+            Facts::Catalog,
+            Colour::None,
+            1,
+            0,
+            1,
+            1,
+            0,
+        ),
+        row(
+            first + 30,
+            Holding::PartyLoose,
+            Facts::Catalog,
+            Colour::None,
+            1,
+            0,
+            1,
+            1,
+            0,
+        ),
+        // 31: a holder the save names but which cannot hold items.
+        row(
+            first + 31,
+            Holding::Unknown,
+            Facts::Catalog,
+            Colour::None,
+            1,
+            0,
+            0,
+            0,
+            0,
+        ),
+        // 32: a puppet who has joined the party.
+        row(
+            first + 32,
+            Holding::Equipped,
+            Facts::Catalog,
+            Colour::None,
+            1,
+            0,
+            0,
+            0,
+            0,
+        ),
     ];
     // Every anomaly, in the order the accounting meets them.
     let wanted: Vec<String> = vec![
@@ -676,10 +828,27 @@ pub fn accounting() -> Result<String, String> {
             first + 22
         ),
         format!(
+            "item {} has the part crystal in slot 0, which its host's facts do not declare",
+            first + 24
+        ),
+        format!(
             "item {} holds both KOTOR upgrade rows and TSL fitted slots",
             first + 24
         ),
         format!("item {} has a zero stack", first + 25),
+        format!(
+            "item {} has the part medpac in slot 1, which is not an upgrade this module or the save describes",
+            first + 29
+        ),
+        format!(
+            "item {} has the part power in slot 1, whose kind 1 is not the kind 0 its host declares",
+            first + 30
+        ),
+        format!(
+            "item {} is held by object {}, which is not an object that holds items",
+            first + 31,
+            wanderer
+        ),
         format!(
             "holder {player} has 2 items equipped in slot {}",
             slots::HANDS
@@ -756,29 +925,33 @@ pub fn accounting() -> Result<String, String> {
         back == before && back.encode() == back_bytes && back.script.items.stamp() == back_stamp;
     let named = truth.len() == report.items.len();
     let flags = report.ambiguities == wanted;
+    // The helper that names a seat's body has to agree with the save's own
+    // seat table, which is what the ground truth above was read from.
+    let seat_ok = seat_holder(&back, sim::Seat(0)) == Some(sim::SimId(player));
     let totals = read
         && round_trip
         && read_only
         && named
         && wrong.is_empty()
         && flags
-        && report.units == 31
+        && seat_ok
+        && report.units == 36
         && report.infinite == 1
-        && report.party_loose == 9
+        && report.party_loose == 12
         && report.carried == 2
-        && report.equipped == 5
+        && report.equipped == 6
         && report.floor == 1
         && report.containers == 2
         && report.store == 3
         && report.creatures == 2
         && report.area_objects == 1
-        && report.unknown == 3
+        && report.unknown == 4
         && report.kotor_rows == 3
-        && report.tsl_slots == 6
-        && report.parts_unresolved == 1
+        && report.tsl_slots == 9
+        && report.parts_unresolved == 4
         && report.rows_unlisted == 1
-        && report.colours == 4
-        && report.colour_fitted == 3
+        && report.colours == 5
+        && report.colour_fitted == 4
         && report.colour_by_template == 1
         && report.colour_unknown == 1
         && report.facts_carried == 1
@@ -810,13 +983,18 @@ pub fn accounting() -> Result<String, String> {
                 ),
                 format!("item {} has a zero stack", first + 25),
                 format!(
+                    "item {} is held by object {}, which is not an object that holds items",
+                    first + 31,
+                    wanderer
+                ),
+                format!(
                     "holder {player} has 2 items equipped in slot {}",
                     slots::HANDS
                 ),
             ];
     if !totals || !blind_facts || !wrong.is_empty() {
         return Err(format!(
-            "read {read}, round trip {round_trip}, read only {read_only}, all items named {named}, wrong {wrong:?}, flags {flags}, items {}, units {}, infinite {}, party {}, carried {}, equipped {}, floor {}, containers {}, store {}, creatures {}, area objects {}, unknown {}, rows {}, slots {}, parts {}, rows unlisted {}, colours {} ({} fitted, {} by template, {} unknown), facts carried {}, facts absent {}, holders {:?}, ambiguities {:?}",
+            "read {read}, round trip {round_trip}, read only {read_only}, all items named {named}, seat holder {seat_ok}, flags {flags}, blind {blind_facts}, wrong {wrong:?}, items {}, units {}, infinite {}, party {}, carried {}, equipped {}, floor {}, containers {}, store {}, creatures {}, area objects {}, unknown {}, rows {}, slots {}, parts {}, rows unlisted {}, colours {} ({} fitted, {} by template, {} unknown), facts carried {}, facts absent {}, holders {:?}, ambiguities {:?}",
             report.items.len(),
             report.units,
             report.infinite,

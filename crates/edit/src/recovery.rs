@@ -96,8 +96,9 @@ pub struct ItemOwnership {
     pub kotor_rows: usize,
     /// TSL's fitted upgrade slots whose template is not empty, over every unit.
     pub tsl_slots: usize,
-    /// Fitted parts, or rows, that neither the module's catalog nor the save's
-    /// carried facts describe. Counted per id, not per unit.
+    /// Fitted parts this save cannot explain: nothing describes the part, the
+    /// part is not an upgrade of the kind the host's slot takes, or the host's
+    /// facts declare no such slot. Counted per id, not per unit.
     pub unresolved_parts: usize,
     pub unlisted_rows: usize,
     /// How the save shows a colour part on this item.
@@ -136,6 +137,9 @@ pub struct OwnershipReport {
     pub colour_unknown: usize,
     pub facts_carried: usize,
     pub facts_absent: usize,
+    /// Holder ids nothing in the save answers for. A holder the save does name,
+    /// but which is not an object that holds items, is reported as an anomaly
+    /// instead, because its id is known to be wrong rather than missing.
     pub unknown_holders: Vec<u32>,
     pub ambiguities: Vec<String>,
 }
@@ -182,7 +186,20 @@ fn character_holders(save: &Save) -> HashSet<u32> {
             ids.insert(kept.from);
         }
     }
+    // TSL's puppets are party members with their own bodies; a puppet who has
+    // joined wears and carries things under its own object id.
+    for puppet in save.script.party.puppets.values() {
+        if let Some(object) = puppet.object {
+            ids.insert(object);
+        }
+    }
     ids
+}
+
+/// Whether the save names an entity of any kind with this id, in this module
+/// or in one already played.
+fn entity_named(save: &Save, id: u32) -> bool {
+    entities(save).any(|entity| entity.id.0 == id)
 }
 
 /// Who holds `item`: the party, a character, the area's floor, one of the
@@ -224,12 +241,9 @@ fn colour_sign(catalog: Option<&Catalog>, facts: Option<&ItemFacts>, item: &Item
     let Some(facts) = facts else {
         return Colour::Unknown;
     };
-    let fitted = facts
-        .slot_kinds
-        .iter()
-        .position(|kind| *kind == COLOUR_SLOT)
-        .and_then(|at| item.fitted.get(at))
-        .is_some_and(|part| !part.is_empty());
+    let fitted = facts.slot_kinds.iter().enumerate().any(|(at, kind)| {
+        *kind == COLOUR_SLOT && item.fitted.get(at).is_some_and(|part| !part.is_empty())
+    });
     if fitted {
         return Colour::Fitted;
     }
@@ -247,11 +261,11 @@ fn colour_sign(catalog: Option<&Catalog>, facts: Option<&ItemFacts>, item: &Item
 /// of unsent stock; an item that claims no units at all is still one row of the
 /// save's item table, and its installed parts are counted once (and the empty
 /// stack is reported as an anomaly).
-fn units(item: &Item) -> Option<usize> {
+fn units(item: &Item) -> usize {
     if item.infinite {
-        return Some(1);
+        return 1;
     }
-    usize::from(item.stack).max(1).into()
+    usize::from(item.stack).max(1)
 }
 
 /// What `save` holds. This reads only `save` and `catalog`: it writes no
@@ -291,7 +305,7 @@ pub fn inspect(save: &Save, catalog: Option<&Catalog>) -> OwnershipReport {
         if let Some(slot) = item.slot {
             *slots.entry((item.holder, slot)).or_default() += 1;
         }
-        if holding == Holding::Unknown {
+        if holding == Holding::Unknown && !entity_named(save, item.holder) {
             unknown.insert(item.holder);
         }
         let facts =
@@ -313,36 +327,54 @@ pub fn inspect(save: &Save, catalog: Option<&Catalog>) -> OwnershipReport {
         // of parts follows the stack; `State::one_of` splits one unit out to
         // edit it, which is how a stack of upgraded items comes about.
         let units = units(item);
-        let (kotor_rows, tsl_slots) = match units {
-            Some(units) => match (rows.checked_mul(units), fitted.checked_mul(units)) {
-                (Some(rows), Some(slots)) => (rows, slots),
-                _ => {
-                    report.ambiguities.push(format!(
-                        "item {id} holds more installed parts than can be counted"
-                    ));
-                    (rows, fitted)
-                }
-            },
-            None => {
-                report
-                    .ambiguities
-                    .push(format!("item {id} has a stack that cannot be counted"));
+        let (kotor_rows, tsl_slots) = match (rows.checked_mul(units), fitted.checked_mul(units)) {
+            (Some(rows), Some(slots)) => (rows, slots),
+            _ => {
+                report.ambiguities.push(format!(
+                    "item {id} holds more installed parts than can be counted"
+                ));
                 (rows, fitted)
             }
         };
         // The parts installed in the item have to be described somewhere too,
         // or the item is only half accounted for.
         let mut unresolved_parts = 0;
-        if let Some(catalog) = catalog {
+        if catalog.is_some() {
             for (slot, part) in item.fitted.iter().enumerate() {
                 if part.is_empty() {
                     continue;
                 }
-                if facts_in_play(catalog, &save.script.known, part).is_none() {
-                    unresolved_parts += 1;
-                    report.ambiguities.push(format!(
+                // The host has to declare the slot the part sits in, and the
+                // part has to be an upgrade of the kind that slot takes;
+                // otherwise the save claims a fitted part this save cannot
+                // explain, which is counted as unresolved, not as fitted.
+                let declared = facts.and_then(|facts| facts.slot_kinds.get(slot)).copied();
+                let described =
+                    catalog.and_then(|catalog| facts_in_play(catalog, &save.script.known, part));
+                let upgrade = described.and_then(|part_facts| part_facts.upgrade);
+                let why = match (declared, described.is_some(), upgrade) {
+                    (None, _, _) => Some(format!(
+                        "item {id} has the part {part} in slot {slot}, which its host's facts do not declare"
+                    )),
+                    (_, false, _) => Some(format!(
                         "item {id} has the part {part} in slot {slot}, which neither the module nor the save describes"
-                    ));
+                    )),
+                    // A colour slot is filled by the colour route, which
+                    // changes the hilt's own template and needs no upgrade
+                    // facts of its own: only the part's description is checked
+                    // there.
+                    (Some(COLOUR_SLOT), true, None) => None,
+                    (Some(_), true, None) => Some(format!(
+                        "item {id} has the part {part} in slot {slot}, which is not an upgrade this module or the save describes"
+                    )),
+                    (Some(kind), true, Some((_, part_kind))) if part_kind != kind => Some(format!(
+                        "item {id} has the part {part} in slot {slot}, whose kind {part_kind} is not the kind {kind} its host declares"
+                    )),
+                    _ => None,
+                };
+                if let Some(why) = why {
+                    unresolved_parts += 1;
+                    report.ambiguities.push(why);
                 }
             }
         }
@@ -409,7 +441,15 @@ pub fn inspect(save: &Save, catalog: Option<&Catalog>) -> OwnershipReport {
                     item.holder
                 ));
             }
-            Holding::Unknown => report.unknown += 1,
+            Holding::Unknown => {
+                report.unknown += 1;
+                if entity_named(save, item.holder) {
+                    report.ambiguities.push(format!(
+                        "item {id} is held by object {}, which is not an object that holds items",
+                        item.holder
+                    ));
+                }
+            }
         }
         match source {
             Facts::Carried => report.facts_carried += 1,
@@ -425,7 +465,7 @@ pub fn inspect(save: &Save, catalog: Option<&Catalog>) -> OwnershipReport {
             holding,
             facts: source,
             infinite: item.infinite,
-            units: units.unwrap_or(1),
+            units,
             kotor_rows,
             tsl_slots,
             unresolved_parts,
