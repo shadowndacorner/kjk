@@ -552,6 +552,33 @@ fn plain_shared_module(level: u8) -> Catalog {
     ])
 }
 
+/// The hilt, its colour crystals and the module's own template of the fitted
+/// part's resref, as a module whose own part of that resref is an upgrade of
+/// kind `part_kind` sees them. Both hilts take a colour slot and a slot of
+/// `part_kind`'s kind at level 1, so the two modules can disagree about nothing
+/// but the kind the part is.
+fn kind_module(which: &str, part_kind: u8) -> Catalog {
+    let kinds = vec![0, 2];
+    let old_saber = host("slot_saber", kinds.clone(), slots::RIGHT_WEAPON);
+    let new_saber = host("slot_saber_red", kinds, slots::RIGHT_WEAPON);
+    let old = ItemFacts {
+        recolours: vec!["slot_saber".into()],
+        ..part("old_crystal", 0, 0, Vec::new())
+    };
+    let new = ItemFacts {
+        recolours: vec!["slot_saber_red".into()],
+        ..part("new_crystal", 0, 0, Vec::new())
+    };
+    let own = crate::inventory::own_template("shared_part", which);
+    Catalog::new([
+        old_saber,
+        new_saber,
+        old,
+        new,
+        part(&own, part_kind, 1, Vec::new()),
+    ])
+}
+
 /// The part a module's own template of `resref` describes, for a probe to
 /// say which reading of a fitted part it is judging.
 fn own_part(catalog: &Catalog, resref: &str, module: &str) -> ItemFacts {
@@ -642,12 +669,28 @@ fn nothing_swapped(world: &SimWorld, given: &str, returned: &str) -> bool {
     count(world, given) == 1 && count(world, returned) == 0
 }
 
+/// The name a legal fit writes into a TSL slot for a part read from `module`'s
+/// own archives: the part's own template, which carries the module
+/// (`own_template`, and `fit_inner` copies it into `Item::fitted`). A probe that
+/// hands a fitted part over by hand has to name it this way, or it is judging a
+/// state no fit could have made.
+fn fit_writes(resref: &str, module: &str) -> String {
+    crate::inventory::own_template(resref, module)
+}
+
 /// The KOTOR 1 row `row` of `hilt` names a part this module really has, at
 /// that row and kind: the row is not a name floating free of the catalog.
 fn row_names_a_part(catalog: &Catalog, hilt: &str, row: u8) -> bool {
     let Some(host) = catalog.get(hilt) else {
         return false;
     };
+    // A hilt with TSL slots takes an upgrade in a slot, never in a KOTOR 1 row:
+    // `fit_inner` tries the colour route first, then the slots when the host has
+    // any, and only then a row. So a probe that preloads a row on a host with
+    // slots is describing a state the bench could not have made.
+    if !host.slot_kinds.is_empty() {
+        return false;
+    }
     let Some(upgrade) = host.takes(row) else {
         return false;
     };
@@ -1497,13 +1540,14 @@ fn colour_refusal_checks() -> Checks {
     let saber = give_with(&mut world, &catalog, "slot_saber", PARTY, None);
     let new = give_with(&mut world, &catalog, "new_crystal", PARTY, None);
     let mut state = world.script_state().clone();
-    // TSL's save slots name a fitted part by its bare resref; the carried
-    // facts are keyed by its full template.
+    // The part came from module m's own archives, so a fit there wrote that
+    // template into the save slot, and the carried facts are keyed by it. The
+    // module in play has no file of the resref at all.
     let facts = crate::inventory::own_template("off_catalog", "m");
     let carried_part = part(&facts, 1, 0, Vec::new());
     state.known.insert(facts.clone(), carried_part.clone());
     let mut held = state.items.get_mut(&saber).expect("slot_saber");
-    held.fitted = vec![String::new(), "off_catalog".into()];
+    held.fitted = vec![String::new(), facts.clone()];
     drop(held);
     world.set_script_state(state);
     let next = world.script_state().next_item;
@@ -1519,7 +1563,7 @@ fn colour_refusal_checks() -> Checks {
             "slot_saber_red",
             1,
             0,
-            vec![String::new(), "off_catalog".to_string()],
+            vec![String::new(), "off_catalog@m".to_string()],
         ),
         carried(
             crate::inventory::FIRST_ITEM + next,
@@ -1550,7 +1594,7 @@ fn colour_refusal_checks() -> Checks {
         && before
             .items
             .get(&saber)
-            .is_some_and(|held| held.fitted.get(1).map(String::as_str) == Some("off_catalog"));
+            .is_some_and(|held| held.fitted.get(1).map(String::as_str) == Some("off_catalog@m"));
     let reaches = swap_reaches_preserves(&catalog, &before, saber, new, "slot_saber_red");
     let parts = swap_outcome(
         &world,
@@ -1593,7 +1637,7 @@ fn colour_refusal_checks() -> Checks {
         state.known.insert(facts.template.clone(), facts.clone());
     }
     let mut held = state.items.get_mut(&saber).expect("slot_saber");
-    held.fitted = vec![String::new(), "one_resref".into()];
+    held.fitted = vec![String::new(), fit_writes("one_resref", "a")];
     drop(held);
     let holds_both = state.known.get(&part_a.template) == Some(&part_a)
         && state.known.get(&part_b.template) == Some(&part_b);
@@ -1617,7 +1661,7 @@ fn colour_refusal_checks() -> Checks {
     world.set_script_state(state);
     let swapped = nothing_swapped(&world, "new_crystal", "old_crystal");
     let swap = swap_reaches_preserves(&catalog, &before, saber, new, "slot_saber_red");
-    let named = fitted_names(&before, saber, 1, "one_resref");
+    let named = fitted_names(&before, saber, 1, &fit_writes("one_resref", "a"));
     let slots = both_slots_take(&catalog, "slot_saber", "slot_saber_red", 1, 1);
     let reaches = swap && named && slots;
     checks.push((
@@ -1654,12 +1698,12 @@ fn colour_refusal_checks() -> Checks {
     let mut state = world.script_state().clone();
     state.known.insert(part_a.template.clone(), part_a.clone());
     let mut held = state.items.get_mut(&saber).expect("slot_saber");
-    held.fitted = vec![String::new(), "shared_part".into()];
+    held.fitted = vec![String::new(), fit_writes("shared_part", "a")];
     drop(held);
     let holds_a = state.known.get(&part_a.template) == Some(&part_a);
     // Only the carried description puts the part above what the new hilt
-    // takes: the module's own template of the same resref asks level 0, and
-    // it is the one the catalog answers the bare resref with.
+    // takes: the module's own template of the same resref asks level 0, and it
+    // is the one this catalog answers for the resref under the fitted name.
     let shape = part_a.upgrade == Some((0, 1))
         && part_a.upgrade_level == 3
         && part_b.upgrade == Some((0, 1))
@@ -1676,7 +1720,7 @@ fn colour_refusal_checks() -> Checks {
     let kept = state == before && out_same(&out, &before_out);
     world.set_script_state(state);
     let swap = swap_reaches_preserves(&catalog, &before, saber, new, "slot_saber_red");
-    let named = fitted_names(&before, saber, 1, "shared_part");
+    let named = fitted_names(&before, saber, 1, &fit_writes("shared_part", "a"));
     let slots = both_slots_take(&catalog, "slot_saber", "slot_saber_red", 1, 1);
     let reaches = swap && named && slots;
     checks.push((
@@ -1706,12 +1750,12 @@ fn colour_refusal_checks() -> Checks {
     let mut state = world.script_state().clone();
     state.known.insert(part_a.template.clone(), part_a.clone());
     let mut held = state.items.get_mut(&saber).expect("slot_saber");
-    held.fitted = vec![String::new(), "shared_part".into()];
+    held.fitted = vec![String::new(), fit_writes("shared_part", "a")];
     drop(held);
     let holds_a = state.known.get(&part_a.template) == Some(&part_a);
     // Both descriptions are really there and really ask the same kind at the
-    // same level: the carried one from module a, and the module's own part b
-    // for the bare resref the save slot holds.
+    // same level: the carried one from module a, which is the name the save
+    // slot holds, and module b's own part for the resref under it.
     let shape = part_a.upgrade == Some((0, 1))
         && part_a.upgrade_level == 1
         && part_b.upgrade == Some((0, 1))
@@ -1734,7 +1778,7 @@ fn colour_refusal_checks() -> Checks {
             "slot_saber_red",
             1,
             0,
-            vec![String::new(), "shared_part".to_string()],
+            vec![String::new(), fit_writes("shared_part", "a")],
         ),
         carried(
             crate::inventory::FIRST_ITEM + next,
@@ -1767,16 +1811,17 @@ fn colour_refusal_checks() -> Checks {
 
     // The same shape as a real module change. The part was fitted in the
     // module left, whose own template of its resref asks level 3; the module
-    // entered has its own template of that resref asking level 0, so its
-    // catalog answers for the bare slot value. The facts of the part fitted
-    // in the first module travel with the item, and the swap refuses.
+    // entered has its own template of that resref asking level 0, and its
+    // catalog answers for the resref under the name the fit wrote. The facts of
+    // the part fitted in the first module travel with the item, and the swap
+    // refuses.
     let left = shadow_module("a", 3, 3);
     let entered = shadow_module("b", 1, 0);
     let mut world = colour_world(left.clone());
     let saber = give_with(&mut world, &left, "slot_saber", PARTY, None);
     let mut state = world.script_state().clone();
     let mut held = state.items.get_mut(&saber).expect("slot_saber");
-    held.fitted = vec![String::new(), "shared_part".into()];
+    held.fitted = vec![String::new(), fit_writes("shared_part", "a")];
     drop(held);
     state.carry_known(&left, &entered);
     let part_a = own_part(&left, "shared_part", "a");
@@ -1784,8 +1829,8 @@ fn colour_refusal_checks() -> Checks {
     let holds_a = state.known.get(&part_a.template) == Some(&part_a);
     let hilt = hilt_level(&entered, "slot_saber_red");
     // What each module asks of the fitted resref, and what the module entered
-    // answers for the bare resref the save slot holds. Only module a reads the
-    // part above what the new hilt takes.
+    // answers for the resref under the name the fit wrote. Only module a reads
+    // the part above what the new hilt takes.
     let shape = part_a.upgrade == Some((0, 1))
         && part_a.upgrade_level == 3
         && part_b.upgrade == Some((0, 1))
@@ -1806,7 +1851,7 @@ fn colour_refusal_checks() -> Checks {
     let kept = state == before && out_same(&out, &before_out);
     world.set_script_state(state);
     let swap = swap_reaches_preserves(&entered, &before, saber, new, "slot_saber_red");
-    let named = fitted_names(&before, saber, 1, "shared_part");
+    let named = fitted_names(&before, saber, 1, &fit_writes("shared_part", "a"));
     let slots = both_slots_take(&entered, "slot_saber", "slot_saber_red", 1, 1);
     let reaches = swap && named && slots;
     checks.push((
@@ -1832,7 +1877,9 @@ fn colour_refusal_checks() -> Checks {
     let mut state = before.clone();
     state.carry_known(&entered, &third);
     let kept_facts = state.known.get(&part_a.template) == Some(&part_a);
-    let holds_b = state.known.get(&part_b.template) == Some(&part_b);
+    // Nothing in play is module b's own part, so its facts are not carried: the
+    // module entered answers for the resref from its own catalog.
+    let holds_b = state.known.get(&part_b.template).is_none();
     let has_crystal = state.items.get(&new).is_some();
     let part_c = own_part(&third, "shared_part", "c");
     let shape_c = part_c.upgrade == Some((0, 1))
@@ -1849,7 +1896,7 @@ fn colour_refusal_checks() -> Checks {
     world.set_script_state(state.clone());
     let swapped = nothing_swapped(&world, "new_crystal", "old_crystal");
     let swap = swap_reaches_preserves(&third, &before_second, saber, new, "slot_saber_red");
-    let named = fitted_names(&before_second, saber, 1, "shared_part");
+    let named = fitted_names(&before_second, saber, 1, &fit_writes("shared_part", "a"));
     let slots = both_slots_take(&third, "slot_saber", "slot_saber_red", 1, 1);
     let reaches = swap && named && slots;
     // Stated here rather than borrowed from the first hop's probe: the part
@@ -1886,7 +1933,7 @@ fn colour_refusal_checks() -> Checks {
                 && kept
                 && swapped,
             format!(
-                "kept_facts {kept_facts}, holds b {holds_b}, crystal {has_crystal}, a's hilt could take the part and both descriptions are of the fitted resref {origin}, a asks 3 and b asks 0 and b answers the resref and the entered hilt takes 1 {premises}, c asks {:?} at level {} {shape_c}, swap {swap}, the slot names the part {named}, both hilts take the kind there {slots}, nothing swapped {swapped}, result {result:?}, kept {kept}",
+                "kept_facts {kept_facts}, b's own part not carried {holds_b}, crystal {has_crystal}, a's hilt could take the part and both descriptions are of the fitted resref {origin}, a asks 3 and b asks 0 and b answers the resref and the entered hilt takes 1 {premises}, c asks {:?} at level {} {shape_c}, swap {swap}, the slot names the part {named}, both hilts take the kind there {slots}, nothing swapped {swapped}, result {result:?}, kept {kept}",
                 part_c.upgrade,
                 part_c.upgrade_level
             ),
@@ -1904,14 +1951,16 @@ fn colour_refusal_checks() -> Checks {
     let saber = give_with(&mut world, &first, "slot_saber", PARTY, None);
     let mut state = world.script_state().clone();
     let mut held = state.items.get_mut(&saber).expect("slot_saber");
-    held.fitted = vec![String::new(), "shared_part".into()];
+    held.fitted = vec![String::new(), fit_writes("shared_part", "a")];
     drop(held);
     state.carry_known(&first, &middle);
     state.carry_known(&middle, &third);
     let wanted_a = own_part(&first, "shared_part", "a");
     let wanted_b = own_part(&middle, "shared_part", "b");
     let holds_a = state.known.get(&wanted_a.template) == Some(&wanted_a);
-    let holds_b = state.known.get(&wanted_b.template) == Some(&wanted_b);
+    // Nothing in play is module b's own part, so its facts are not carried: each
+    // module entered answers for the resref from its own catalog.
+    let holds_b = state.known.get(&wanted_b.template).is_none();
     // What each description asks, so that the refusal can only come from the
     // facts carried from module a: module b's own template and the shared
     // template module c reads both ask level 0, and the new hilt takes 1.
@@ -1942,7 +1991,7 @@ fn colour_refusal_checks() -> Checks {
     world.set_script_state(state);
     let swapped = nothing_swapped(&world, "new_crystal", "old_crystal");
     let swap = swap_reaches_preserves(&third, &before, saber, new, "slot_saber_red");
-    let named = fitted_names(&before, saber, 1, "shared_part");
+    let named = fitted_names(&before, saber, 1, &fit_writes("shared_part", "a"));
     let slots = both_slots_take(&third, "slot_saber", "slot_saber_red", 1, 1);
     let reaches = swap && named && slots;
     checks.push((
@@ -1956,7 +2005,7 @@ fn colour_refusal_checks() -> Checks {
                 && kept
                 && swapped,
             format!(
-                "holds a {holds_a}, holds b {holds_b}, a asks {}, c asks {}, swap {swap}, the slot names the part {named}, both hilts take the kind there {slots}, result {result:?}, kept {kept}, nothing swapped {swapped}",
+                "holds a {holds_a}, b's own part not carried {holds_b}, a asks {}, c asks {}, swap {swap}, the slot names the part {named}, both hilts take the kind there {slots}, result {result:?}, kept {kept}, nothing swapped {swapped}",
                 wanted_a.upgrade_level, shared.upgrade_level
             ),
         ),
@@ -1976,7 +2025,7 @@ fn colour_refusal_checks() -> Checks {
     let saber = give_with(&mut world, &left, "slot_saber", PARTY, None);
     let mut state = world.script_state().clone();
     let mut held = state.items.get_mut(&saber).expect("slot_saber");
-    held.fitted = vec![String::new(), "shared_part".into()];
+    held.fitted = vec![String::new(), fit_writes("shared_part", "a")];
     drop(held);
     state.carry_known(&left, &middle);
     state.carry_known(&middle, &entered);
@@ -1984,7 +2033,9 @@ fn colour_refusal_checks() -> Checks {
     let wanted_b = own_part(&middle, "shared_part", "b");
     let wanted_c = own_part(&entered, "shared_part", "c");
     let holds_a = state.known.get(&wanted_a.template) == Some(&wanted_a);
-    let holds_b = state.known.get(&wanted_b.template) == Some(&wanted_b);
+    // Nothing in play is module b's own part, so its facts are not carried: each
+    // module entered answers for the resref from its own catalog.
+    let holds_b = state.known.get(&wanted_b.template).is_none();
     // The three descriptions this swap is judged by, so that it is the
     // disagreement and not a fixture mistake that the old rule would have
     // refused: a asks level 1, b and c both ask level 0 as their own
@@ -2017,7 +2068,7 @@ fn colour_refusal_checks() -> Checks {
             "slot_saber_red",
             1,
             0,
-            vec![String::new(), "shared_part".to_string()],
+            vec![String::new(), fit_writes("shared_part", "a")],
         ),
         carried(
             crate::inventory::FIRST_ITEM + next,
@@ -2032,7 +2083,7 @@ fn colour_refusal_checks() -> Checks {
     // the probe means: one old colour mapping, and the crystal in hand
     // recolouring the hilt into the intended new one.
     let swap = swap_reaches_preserves(&entered, &before, saber, new, "slot_saber_red");
-    let named = fitted_names(&before, saber, 1, "shared_part");
+    let named = fitted_names(&before, saber, 1, &fit_writes("shared_part", "a"));
     let slots = both_slots_take(&entered, "slot_saber", "slot_saber_red", 1, 1);
     let reaches = swap && named && slots;
     let parts = swap_outcome(
@@ -2050,7 +2101,7 @@ fn colour_refusal_checks() -> Checks {
         check(
             result.is_ok() && exact,
             format!(
-                "holds a {holds_a}, holds b {holds_b}, a asks {}, b asks {}, c asks {}, outcome {parts:?}, result {result:?}, goods {goods:?}",
+                "holds a {holds_a}, b's own part not carried {holds_b}, a asks {}, b asks {}, c asks {}, outcome {parts:?}, result {result:?}, goods {goods:?}",
                 wanted_a.upgrade_level,
                 wanted_b.upgrade_level,
                 wanted_c.upgrade_level
@@ -2068,13 +2119,13 @@ fn colour_refusal_checks() -> Checks {
     let saber = give_with(&mut world, &left, "slot_saber", PARTY, None);
     let mut state = world.script_state().clone();
     let mut held = state.items.get_mut(&saber).expect("slot_saber");
-    held.fitted = vec![String::new(), "shared_part".into()];
+    held.fitted = vec![String::new(), fit_writes("shared_part", "a")];
     drop(held);
     state.carry_known(&left, &entered);
     let wanted_a = own_part(&left, "shared_part", "a");
     let wanted_b = own_part(&entered, "shared_part", "b");
     let holds_a = state.known.get(&wanted_a.template) == Some(&wanted_a);
-    // The bare resref the save slot holds resolves to module b's own
+    // The resref under the name the fit wrote resolves to module b's own
     // template, and module b's reading is the only one above what the new
     // hilt takes: a asks level 0, b asks 3, the hilt takes 1.
     let reads_higher = entered
@@ -2100,7 +2151,7 @@ fn colour_refusal_checks() -> Checks {
     world.set_script_state(state);
     let swapped = nothing_swapped(&world, "new_crystal", "old_crystal");
     let swap = swap_reaches_preserves(&entered, &before, saber, new, "slot_saber_red");
-    let named = fitted_names(&before, saber, 1, "shared_part");
+    let named = fitted_names(&before, saber, 1, &fit_writes("shared_part", "a"));
     let slots = both_slots_take(&entered, "slot_saber", "slot_saber_red", 1, 1);
     let reaches = swap && named && slots;
     checks.push((
@@ -2114,6 +2165,208 @@ fn colour_refusal_checks() -> Checks {
                 && swapped,
             format!(
                 "holds a {holds_a}, reads higher {reads_higher}, swap {swap}, the slot names the part {named}, both hilts take the kind there {slots}, result {result:?}, kept {kept}, nothing swapped {swapped}"
+            ),
+        ),
+    ));
+
+    // One more module change, with the part the bench really fitted. The party
+    // is handed module a's own template of the resref, the fit puts it in slot 1
+    // of the hilt, and the name that lands in the save slot is the part's own
+    // template, which carries module a. The module then entered has its own file
+    // of that resref, and it asks level 3 where the new hilt takes level 1, so
+    // the swap refuses even though the description carried from module a, at
+    // level 1, would license it.
+    let left = shadow_module("a", 1, 1);
+    let entered = shadow_module("b", 1, 3);
+    let mut world = colour_world(left.clone());
+    let saber = give_with(&mut world, &left, "slot_saber", PARTY, None);
+    let mut state = world.script_state().clone();
+    let given = state
+        .make_item(&left, "shared_part", PARTY, 1, None)
+        .expect("the part to fit")
+        .0;
+    let mut fitting = seeded_out();
+    let fitted = state.fit(&left, &mut fitting, saber, given, Some(1));
+    // The name the save slot holds after a real fit is the part's own template,
+    // and it is the name the probes above hand over by hand.
+    let written = state
+        .items
+        .get(&saber)
+        .is_some_and(|held| held.fitted.get(1).map(String::as_str) == Some("shared_part@a"));
+    let part_a = own_part(&left, "shared_part", "a");
+    let part_b = own_part(&entered, "shared_part", "b");
+    state.carry_known(&left, &entered);
+    let holds_a = state.known.get(&part_a.template) == Some(&part_a);
+    let shape = fitted.is_ok()
+        && written
+        && part_a.upgrade == Some((0, 1))
+        && part_a.upgrade_level == 1
+        && part_b.upgrade == Some((0, 1))
+        && part_b.upgrade_level == 3
+        && entered.get("shared_part") == Some(&part_b)
+        && descriptions_of(&part_a, &part_b, "shared_part", false)
+        && hilt_could_take(&left, "slot_saber", 1, &part_a)
+        && hilt_level(&entered, "slot_saber_red") == 1;
+    let new = state
+        .make_item(&entered, "new_crystal", PARTY, 1, None)
+        .expect("the crystal for the swap")
+        .0;
+    world.set_script_state(state.clone());
+    let before = state.clone();
+    let mut out = seeded_out();
+    let before_out = out.clone();
+    let result = state.fit(&entered, &mut out, saber, new, None);
+    let kept = state == before && out_same(&out, &before_out);
+    world.set_script_state(state);
+    let swapped = nothing_swapped(&world, "new_crystal", "old_crystal");
+    let swap = swap_reaches_preserves(&entered, &before, saber, new, "slot_saber_red");
+    let named = fitted_names(&before, saber, 1, &fit_writes("shared_part", "a"));
+    let slots = both_slots_take(&entered, "slot_saber", "slot_saber_red", 1, 1);
+    checks.push((
+        "a colour swap refuses when the module entered reads a part the bench really fitted higher than the new hilt",
+        check(
+            shape
+                && holds_a
+                && swap
+                && named
+                && slots
+                && result == Err(Notice::CannotUpgrade)
+                && kept
+                && swapped,
+            format!(
+                "fit {fitted:?}, the slot holds module a's own template {written}, holds a {holds_a}, a asks 1 and b asks 3 and the new hilt takes 1 {shape}, swap {swap}, the slot names the part {named}, both hilts take the kind there {slots}, result {result:?}, kept {kept}, nothing swapped {swapped}"
+            ),
+        ),
+    ));
+
+    // The two descriptions of the fitted resref disagree about what kind of part
+    // it is, on a part the bench really fitted. Module a's own file of the
+    // resref is a kind 2 upgrade, which is what the hilt took; the module
+    // entered has its own file of the same resref, and it is a kind 1 upgrade.
+    // A different kind is a different part, so this says nothing about the part
+    // and the swap refuses. Were the last description read to win instead, the
+    // kind 1 the entered module answers with is one the new hilt takes, and the
+    // swap would go ahead.
+    let left = kind_module("a", 2);
+    let entered = kind_module("b", 1);
+    let mut world = colour_world(left.clone());
+    let saber = give_with(&mut world, &left, "slot_saber", PARTY, None);
+    let mut state = world.script_state().clone();
+    let given = state
+        .make_item(&left, "shared_part", PARTY, 1, None)
+        .expect("the part to fit")
+        .0;
+    let mut fitting = seeded_out();
+    let fitted = state.fit(&left, &mut fitting, saber, given, Some(1));
+    let written = state
+        .items
+        .get(&saber)
+        .is_some_and(|held| held.fitted.get(1).map(String::as_str) == Some("shared_part@a"));
+    let part_a = own_part(&left, "shared_part", "a");
+    let part_b = own_part(&entered, "shared_part", "b");
+    state.carry_known(&left, &entered);
+    let holds_a = state.known.get(&part_a.template) == Some(&part_a);
+    let shape = fitted.is_ok()
+        && written
+        && part_a.upgrade == Some((0, 2))
+        && part_a.upgrade_level == 1
+        && part_b.upgrade == Some((0, 1))
+        && part_b.upgrade_level == 1
+        && entered.get("shared_part") == Some(&part_b)
+        && descriptions_of(&part_a, &part_b, "shared_part", false)
+        && hilt_could_take(&left, "slot_saber", 1, &part_a)
+        && hilt_level(&entered, "slot_saber_red") == 1;
+    let new = state
+        .make_item(&entered, "new_crystal", PARTY, 1, None)
+        .expect("the crystal for the swap")
+        .0;
+    world.set_script_state(state.clone());
+    let before = state.clone();
+    let mut out = seeded_out();
+    let before_out = out.clone();
+    let result = state.fit(&entered, &mut out, saber, new, None);
+    let kept = state == before && out_same(&out, &before_out);
+    world.set_script_state(state);
+    let swapped = nothing_swapped(&world, "new_crystal", "old_crystal");
+    let swap = swap_reaches_preserves(&entered, &before, saber, new, "slot_saber_red");
+    let named = fitted_names(&before, saber, 1, &fit_writes("shared_part", "a"));
+    let slots = both_slots_take(&entered, "slot_saber", "slot_saber_red", 1, 2);
+    checks.push((
+        "a colour swap refuses when the descriptions of the fitted part disagree about its kind",
+        check(
+            shape
+                && holds_a
+                && swap
+                && named
+                && slots
+                && result == Err(Notice::CannotUpgrade)
+                && kept
+                && swapped,
+            format!(
+                "fit {fitted:?}, the slot holds module a's own template {written}, holds a {holds_a}, a says kind 2 and b says kind 1 {shape}, swap {swap}, the slot names the part {named}, both hilts take kind 2 there {slots}, result {result:?}, kept {kept}, nothing swapped {swapped}"
+            ),
+        ),
+    ));
+
+    // A part the bench really fitted from a module that keeps no marking of its
+    // own on the resref: the fit writes the bare resref into the save slot, and
+    // that is a state a real module reaches. The module entered reads the same
+    // bare resref at level 3 where the new hilt takes level 1, so the swap
+    // refuses.
+    let left = plain_shared_module(1);
+    let entered = plain_shared_module(3);
+    let mut world = colour_world(left.clone());
+    let saber = give_with(&mut world, &left, "slot_saber", PARTY, None);
+    let mut state = world.script_state().clone();
+    let given = state
+        .make_item(&left, "shared_part", PARTY, 1, None)
+        .expect("the part to fit")
+        .0;
+    let mut fitting = seeded_out();
+    let fitted = state.fit(&left, &mut fitting, saber, given, Some(1));
+    let written = state
+        .items
+        .get(&saber)
+        .is_some_and(|held| held.fitted.get(1).map(String::as_str) == Some("shared_part"));
+    let part_a = left.get("shared_part").expect("module a's part").clone();
+    let part_b = entered.get("shared_part").expect("module b's part").clone();
+    state.carry_known(&left, &entered);
+    let shape = fitted.is_ok()
+        && written
+        && part_a.upgrade == Some((0, 1))
+        && part_a.upgrade_level == 1
+        && part_b.upgrade == Some((0, 1))
+        && part_b.upgrade_level == 3
+        && part_a.template == part_b.template
+        && hilt_could_take(&left, "slot_saber", 1, &part_a)
+        && hilt_level(&entered, "slot_saber_red") == 1;
+    let new = state
+        .make_item(&entered, "new_crystal", PARTY, 1, None)
+        .expect("the crystal for the swap")
+        .0;
+    world.set_script_state(state.clone());
+    let before = state.clone();
+    let mut out = seeded_out();
+    let before_out = out.clone();
+    let result = state.fit(&entered, &mut out, saber, new, None);
+    let kept = state == before && out_same(&out, &before_out);
+    world.set_script_state(state);
+    let swapped = nothing_swapped(&world, "new_crystal", "old_crystal");
+    let swap = swap_reaches_preserves(&entered, &before, saber, new, "slot_saber_red");
+    let named = fitted_names(&before, saber, 1, "shared_part");
+    let slots = both_slots_take(&entered, "slot_saber", "slot_saber_red", 1, 1);
+    checks.push((
+        "a colour swap refuses when a part fitted under a bare resref is read higher by the module entered",
+        check(
+            shape
+                && swap
+                && named
+                && slots
+                && result == Err(Notice::CannotUpgrade)
+                && kept
+                && swapped,
+            format!(
+                "fit {fitted:?}, the slot holds the bare resref {written}, a asks 1 and b asks 3 and the new hilt takes 1 {shape}, swap {swap}, the slot names the part {named}, both hilts take the kind there {slots}, result {result:?}, kept {kept}, nothing swapped {swapped}"
             ),
         ),
     ));

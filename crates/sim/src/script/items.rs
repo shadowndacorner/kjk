@@ -689,12 +689,13 @@ impl State {
         Ok(value)
     }
 
-    /// The kind and level of the part `fitted` names. A TSL save slot names a
-    /// fitted part by its bare resref, so one part may be described by the
-    /// module's catalog and by the facts carried forward from the module it
-    /// was fitted in (`carry_known`), and a route through more than one
-    /// module leaves more than one description of one resref behind. The
-    /// descriptions have to agree on the kind of part it is: a different kind
+    /// The kind and level of the part `fitted` names. A fit writes the part's
+    /// own template into the save slot (`fit_inner`), and a module's own file
+    /// of a resref carries that module (`own_template`), so the name in the slot
+    /// and the resref a script reads can differ; both are read here, along with
+    /// every carried fact of that resref (`carry_known`). A route through more
+    /// than one module leaves more than one description of one resref behind.
+    /// The descriptions have to agree on the kind of part it is: a different kind
     /// is a different part, and then this says none. They may ask different
     /// levels, because two modules read the same resref at different levels,
     /// and the highest level any of them asks is the one reported, so a
@@ -720,13 +721,20 @@ impl State {
                 true
             }
         };
-        if let Some(facts) = catalog.get(fitted)
-            && !see(facts)
-        {
-            return None;
+        // The name in the slot, and the resref under it: a part fitted from a
+        // module's own archives is named `resref@module`, and the module entered
+        // has its own file of that resref, which is the one its catalog answers
+        // for the resref.
+        let resref = resref_of(fitted);
+        for name in [fitted, resref] {
+            if let Some(facts) = catalog.get(name)
+                && !see(facts)
+            {
+                return None;
+            }
         }
         for (template, facts) in known {
-            if (template == fitted || resref_of(template) == fitted) && !see(facts) {
+            if (template == fitted || resref_of(template) == resref) && !see(facts) {
                 return None;
             }
         }
