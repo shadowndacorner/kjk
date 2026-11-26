@@ -669,14 +669,26 @@ fn descriptions_of(a: &ItemFacts, b: &ItemFacts, resref: &str, same: bool) -> bo
 /// part's kind, and the hilt takes the part's level (a crystal of any level
 /// fits, as `fit_inner` rules). A probe that writes a fitted part by hand has
 /// to say the part could have got there.
-fn hilt_could_take(catalog: &Catalog, hilt: &str, part: &ItemFacts) -> bool {
+fn hilt_could_take(catalog: &Catalog, hilt: &str, slot: usize, part: &ItemFacts) -> bool {
     let Some(host) = catalog.get(hilt) else {
         return false;
     };
     let Some((_, kind)) = part.upgrade else {
         return false;
     };
-    host.slot_kinds.contains(&kind)
+    // `fit_inner` tries the colour route before it looks at any slot: a part
+    // that recolours another hilt of the same base item is never fitted into a
+    // slot at all, so a probe that hands such a part over in `fitted` is
+    // describing a state the bench could not have made.
+    if catalog
+        .recolour(part, host.base_item)
+        .is_some_and(|made| made != host.template)
+    {
+        return false;
+    }
+    // The slot named has to take the part's kind, and the part's level has to
+    // be within what the hilt takes, except for a crystal, which any hilt takes.
+    host.slot_kinds.get(slot) == Some(&kind)
         && (kind == crate::inventory::CRYSTAL || part.upgrade_level <= host.upgrade_level)
 }
 
@@ -773,6 +785,38 @@ fn carried(id: u32, template: &str, stack: u16, upgrades: u32, fitted: Vec<Strin
 
 /// Whether everything in the script state other than the items, the item
 /// numbers and the carried facts is as `before` left it.
+/// The parts of the outcome a successful swap leaves behind, named one by one
+/// so a failure says which one went wrong.
+fn swap_outcome(
+    world: &SimWorld,
+    before: &crate::script::State,
+    change: (&Out, &Out),
+    expected: &Vec<(u32, Item)>,
+    next: u32,
+    given: &str,
+    in_play: usize,
+) -> Vec<(&'static str, bool)> {
+    let (out, before_out) = change;
+    vec![
+        ("goods as expected", party_goods(world) == *expected),
+        (
+            "one item id taken",
+            world.script_state().next_item == next + 1,
+        ),
+        ("the earlier output kept", out_same(out, before_out)),
+        ("the given crystal consumed", count(world, given) == 0),
+        (
+            "the carried facts kept",
+            world.script_state().known == before.known,
+        ),
+        ("items in play as expected", items_in_play(world) == in_play),
+        (
+            "every other field kept",
+            the_rest_unchanged(before, world.script_state()),
+        ),
+    ]
+}
+
 fn the_rest_unchanged(before: &crate::script::State, after: &crate::script::State) -> bool {
     let mut same = after.clone();
     same.items = before.items.clone();
@@ -1062,17 +1106,21 @@ fn return_atomic_checks() -> Checks {
         ),
     ];
     let goods = party_goods(&world);
-    let exact = goods == expected
-        && world.script_state().next_item == next + 2
-        && out_same(&out, &before_out)
-        && world.script_state().known == before.known
-        && items_in_play(&world) == 3
-        && the_rest_unchanged(&before, world.script_state());
+    let goods_match = goods == expected;
+    let ids_taken = world.script_state().next_item == next + 2;
+    let output_kept = out_same(&out, &before_out);
+    let facts_kept = world.script_state().known == before.known;
+    let three_in_play = items_in_play(&world) == 3;
+    let fields_kept = the_rest_unchanged(&before, world.script_state());
+    let exact =
+        goods_match && ids_taken && output_kept && facts_kept && three_in_play && fields_kept;
     checks.push((
         "a stacked K1 host is split before a direct removal, leaving an exact bench",
         check(
             result.is_ok() && exact,
-            format!("result {result:?}, goods {goods:?}"),
+            format!(
+                "goods as expected {goods_match}, two item ids taken {ids_taken}, earlier output kept {output_kept}, carried facts kept {facts_kept}, three items in play {three_in_play}, every other field kept {fields_kept}, result {result:?}, goods {goods:?}"
+            ),
         ),
     ));
 
@@ -1105,18 +1153,27 @@ fn return_atomic_checks() -> Checks {
         ),
     ];
     let goods = party_goods(&world);
-    let exact = goods == expected
-        && world.script_state().next_item == next + 1
-        && out_same(&out, &before_out)
-        && count(&world, "bench_crystal") == 0
-        && world.script_state().known == before.known
-        && items_in_play(&world) == 2
-        && the_rest_unchanged(&before, world.script_state());
+    let goods_match = goods == expected;
+    let id_taken = world.script_state().next_item == next + 1;
+    let output_kept = out_same(&out, &before_out);
+    let crystal_consumed = count(&world, "bench_crystal") == 0;
+    let facts_kept = world.script_state().known == before.known;
+    let two_in_play = items_in_play(&world) == 2;
+    let fields_kept = the_rest_unchanged(&before, world.script_state());
+    let exact = goods_match
+        && id_taken
+        && output_kept
+        && crystal_consumed
+        && facts_kept
+        && two_in_play
+        && fields_kept;
     checks.push((
         "a stacked K1 host is split before a direct fitting, leaving an exact bench",
         check(
             result.is_ok() && exact,
-            format!("result {result:?}, goods {goods:?}"),
+            format!(
+                "goods as expected {goods_match}, one item id taken {id_taken}, earlier output kept {output_kept}, bench crystal consumed {crystal_consumed}, carried facts kept {facts_kept}, two items in play {two_in_play}, every other field kept {fields_kept}, result {result:?}, goods {goods:?}"
+            ),
         ),
     ));
     checks
@@ -1148,7 +1205,7 @@ fn colour_refusal_checks() -> Checks {
                 && result == Err(Notice::CannotUpgrade)
                 && kept
                 && swapped,
-            format!("swap {swap:?}, result {result:?}, kept {kept}"),
+            format!("swap {swap:?}, result {result:?}, kept {kept}, nothing swapped {swapped}"),
         ),
     ));
 
@@ -1175,7 +1232,7 @@ fn colour_refusal_checks() -> Checks {
                 && result == Err(Notice::CannotUpgrade)
                 && kept
                 && swapped,
-            format!("swap {swap:?}, result {result:?}, kept {kept}"),
+            format!("swap {swap:?}, result {result:?}, kept {kept}, nothing swapped {swapped}"),
         ),
     ));
 
@@ -1225,7 +1282,7 @@ fn colour_refusal_checks() -> Checks {
                 && kept
                 && swapped,
             format!(
-                "carries row 1 {carries_row}, old hilt takes it with `crystal` {old_takes_row}, its row names a real part {row_names}, new hilt takes no row 1 {new_lacks_row}, swap reaches `preserves` {reaches}, result {result:?}, kept {kept}"
+                "carries row 1 {carries_row}, old hilt takes it with `crystal` {old_takes_row}, its row names a real part {row_names}, new hilt takes no row 1 {new_lacks_row}, swap reaches `preserves` {reaches}, result {result:?}, kept {kept}, nothing swapped {swapped}"
             ),
         ),
     ));
@@ -1279,7 +1336,7 @@ fn colour_refusal_checks() -> Checks {
                 && kept
                 && swapped,
             format!(
-                "old row {old_row:?}, new row {new_row:?}, both rows name real parts {rows_name}, carries row 1 {carries_row}, swap reaches `preserves` {reaches}, result {result:?}, kept {kept}"
+                "old row {old_row:?}, new row {new_row:?}, both rows name real parts {rows_name}, carries row 1 {carries_row}, swap reaches `preserves` {reaches}, result {result:?}, kept {kept}, nothing swapped {swapped}"
             ),
         ),
     ));
@@ -1329,7 +1386,7 @@ fn colour_refusal_checks() -> Checks {
     // swap for a reason this probe does not name, and the slot-kind rule could
     // be missing from the code without anyone noticing.
     let origin = catalog.get("slot_upgrade").is_some_and(|facts| {
-        hilt_could_take(&catalog, "slot_saber", facts)
+        hilt_could_take(&catalog, "slot_saber", 1, facts)
             && facts.upgrade_level <= hilt_level(&catalog, "slot_saber_red")
     });
     checks.push((
@@ -1343,7 +1400,7 @@ fn colour_refusal_checks() -> Checks {
                 && kept
                 && swapped,
             format!(
-                "part kind {fitted_part_kind:?}, old slot 1 kind {old_slot_kind:?}, new slot 1 kind {new_slot_kind:?}, fitted there {fitted_in_slot}, part could be fitted there and is within the new hilt's level {origin}, swap reaches `preserves` {reaches}, result {result:?}, kept {kept}"
+                "part kind {fitted_part_kind:?}, old slot 1 kind {old_slot_kind:?}, new slot 1 kind {new_slot_kind:?}, fitted there {fitted_in_slot}, part could be fitted there and is within the new hilt's level {origin}, swap reaches `preserves` {reaches}, result {result:?}, kept {kept}, nothing swapped {swapped}"
             ),
         ),
     ));
@@ -1395,15 +1452,16 @@ fn colour_refusal_checks() -> Checks {
         .is_some_and(|held| held.fitted.first().map(String::as_str) == Some("hi_crystal"));
     let reaches = swap_reaches_preserves(&catalog, &before, saber, new, "slot_saber_red")
         && both_slots_take(&catalog, "slot_saber", "slot_saber_red", 0, 0);
-    let exact = crystal_above_both_hilts
-        && reaches
-        && goods == expected
-        && world.script_state().next_item == next + 1
-        && out_same(&out, &before_out)
-        && count(&world, "new_crystal") == 0
-        && world.script_state().known == before.known
-        && items_in_play(&world) == 2
-        && the_rest_unchanged(&before, world.script_state());
+    let parts = swap_outcome(
+        &world,
+        &before,
+        (&out, &before_out),
+        &expected,
+        next,
+        "new_crystal",
+        2,
+    );
+    let exact = crystal_above_both_hilts && reaches && parts.iter().all(|(_, ok)| *ok);
     let crystal_level = catalog
         .get("hi_crystal")
         .map(|facts| facts.upgrade_level)
@@ -1415,7 +1473,7 @@ fn colour_refusal_checks() -> Checks {
         check(
             result.is_ok() && exact,
             format!(
-                "crystal level {crystal_level} above the old hilt's {old_hilt_level} and the new hilt's {new_hilt_level}: {crystal_above_both_hilts}; swap reaches `preserves` {reaches}; result {result:?}, goods {goods:?}"
+                "crystal level {crystal_level} above the old hilt's {old_hilt_level} and the new hilt's {new_hilt_level}: {crystal_above_both_hilts}; swap reaches `preserves` {reaches}; outcome {parts:?}; result {result:?}, goods {goods:?}"
             ),
         ),
     ));
@@ -1480,21 +1538,22 @@ fn colour_refusal_checks() -> Checks {
             .get(&saber)
             .is_some_and(|held| held.fitted.get(1).map(String::as_str) == Some("off_catalog"));
     let reaches = swap_reaches_preserves(&catalog, &before, saber, new, "slot_saber_red");
-    let exact = only_the_save_describes_it
-        && reaches
-        && goods == expected
-        && world.script_state().next_item == next + 1
-        && out_same(&out, &before_out)
-        && count(&world, "new_crystal") == 0
-        && world.script_state().known == before.known
-        && items_in_play(&world) == 2
-        && the_rest_unchanged(&before, world.script_state());
+    let parts = swap_outcome(
+        &world,
+        &before,
+        (&out, &before_out),
+        &expected,
+        next,
+        "new_crystal",
+        2,
+    );
+    let exact = only_the_save_describes_it && reaches && parts.iter().all(|(_, ok)| *ok);
     checks.push((
         "a colour swap keeps a part only State::known describes",
         check(
             result.is_ok() && exact,
             format!(
-                "catalog silent about the fitted part {only_the_save_describes_it}, swap reaches `preserves` {reaches}, result {result:?}, goods {goods:?}"
+                "catalog silent about the fitted part {only_the_save_describes_it}, swap reaches `preserves` {reaches}, outcome {parts:?}, result {result:?}, goods {goods:?}"
             ),
         ),
     ));
@@ -1533,7 +1592,7 @@ fn colour_refusal_checks() -> Checks {
         && part_b.upgrade == Some((0, 1))
         && part_b.upgrade_level == 3
         && descriptions_of(&part_a, &part_b, "one_resref", false)
-        && hilt_could_take(&catalog, "slot_saber", &part_b)
+        && hilt_could_take(&catalog, "slot_saber", 1, &part_b)
         && hilt_level(&catalog, "slot_saber_red") == 1;
     world.set_script_state(state.clone());
     let before = state.clone();
@@ -1558,7 +1617,7 @@ fn colour_refusal_checks() -> Checks {
                 && kept
                 && swapped,
             format!(
-                "holds both {holds_both}, catalog says nothing {catalog_silent}, a asks {}, b asks {}, hilt 1, swap {swap}, the slot names the part {named}, both hilts take the kind there {slots}, result {result:?}, kept {kept}",
+                "holds both {holds_both}, catalog says nothing {catalog_silent}, a asks {}, b asks {}, hilt 1, swap {swap}, the slot names the part {named}, both hilts take the kind there {slots}, result {result:?}, kept {kept}, nothing swapped {swapped}",
                 part_a.upgrade_level, part_b.upgrade_level
             ),
         ),
@@ -1593,7 +1652,7 @@ fn colour_refusal_checks() -> Checks {
         && part_b.upgrade_level == 0
         && catalog.get("shared_part") == Some(&part_b)
         && descriptions_of(&part_a, &part_b, "shared_part", false)
-        && hilt_could_take(&catalog, "slot_saber", &part_a)
+        && hilt_could_take(&catalog, "slot_saber", 1, &part_a)
         && hilt_level(&catalog, "slot_saber_red") == 1;
     world.set_script_state(state.clone());
     let before = state.clone();
@@ -1645,7 +1704,7 @@ fn colour_refusal_checks() -> Checks {
         && part_b.upgrade_level == 1
         && catalog.get("shared_part") == Some(&part_b)
         && descriptions_of(&part_a, &part_b, "shared_part", false)
-        && hilt_could_take(&catalog, "slot_saber", &part_a)
+        && hilt_could_take(&catalog, "slot_saber", 1, &part_a)
         && hilt_level(&catalog, "slot_saber_red") == 1;
     world.set_script_state(state);
     let next = world.script_state().next_item;
@@ -1672,21 +1731,22 @@ fn colour_refusal_checks() -> Checks {
         ),
     ];
     let goods = party_goods(&world);
-    let exact = holds_a
-        && shape
-        && goods == expected
-        && world.script_state().next_item == next + 1
-        && out_same(&out, &before_out)
-        && count(&world, "new_crystal") == 0
-        && world.script_state().known == before.known
-        && items_in_play(&world) == 2
-        && the_rest_unchanged(&before, world.script_state());
+    let parts = swap_outcome(
+        &world,
+        &before,
+        (&out, &before_out),
+        &expected,
+        next,
+        "new_crystal",
+        2,
+    );
+    let exact = holds_a && shape && parts.iter().all(|(_, ok)| *ok);
     checks.push((
         "a colour swap goes ahead when the catalog and the carried facts describe the same part",
         check(
             result.is_ok() && exact,
             format!(
-                "holds a {holds_a}, descriptions agree {shape}, result {result:?}, goods {goods:?}",
+                "holds a {holds_a}, descriptions agree {shape}, outcome {parts:?}, result {result:?}, goods {goods:?}",
             ),
         ),
     ));
@@ -1718,7 +1778,7 @@ fn colour_refusal_checks() -> Checks {
         && part_b.upgrade_level == 0
         && entered.get("shared_part") == Some(&part_b)
         && descriptions_of(&part_a, &part_b, "shared_part", false)
-        && hilt_could_take(&left, "slot_saber", &part_a)
+        && hilt_could_take(&left, "slot_saber", 1, &part_a)
         && hilt == 1;
     let new = state
         .make_item(&entered, "new_crystal", PARTY, 1, None)
@@ -1781,8 +1841,19 @@ fn colour_refusal_checks() -> Checks {
     // Stated here rather than borrowed from the first hop's probe: the part
     // came from module a's hilt, which could take a part of its kind and
     // level, and the two descriptions are of the resref the slot names.
-    let origin = hilt_could_take(&left, "slot_saber", &part_a)
+    let origin = hilt_could_take(&left, "slot_saber", 1, &part_a)
         && descriptions_of(&part_a, &part_b, "shared_part", false);
+    // And this hop's own premises, not the first hop's: module a asks level 3
+    // for the part and module b asks level 0, module b's own template of the
+    // resref is the one the module entered answers with, and the hilt entered
+    // takes level 1. Without them a competing refusal in module b could stand
+    // in for the carried facts here.
+    let premises = part_a.upgrade == Some((0, 1))
+        && part_a.upgrade_level == 3
+        && part_b.upgrade == Some((0, 1))
+        && part_b.upgrade_level == 0
+        && entered.get("shared_part") == Some(&part_b)
+        && hilt_level(&third, "slot_saber_red") == 1;
     checks.push((
         "the facts of the module a part was fitted in survive a second module change",
         check(
@@ -1790,13 +1861,14 @@ fn colour_refusal_checks() -> Checks {
                 && holds_b
                 && has_crystal
                 && origin
+                && premises
                 && shape_c
                 && reaches
                 && result == Err(Notice::CannotUpgrade)
                 && kept
                 && swapped,
             format!(
-                "kept_facts {kept_facts}, holds b {holds_b}, crystal {has_crystal}, a's hilt could take the part and both descriptions are of the fitted resref {origin}, c asks {:?} at {}, swap {swap}, the slot names the part {named}, both hilts take the kind there {slots}, result {result:?}, kept {kept}",
+                "kept_facts {kept_facts}, holds b {holds_b}, crystal {has_crystal}, a's hilt could take the part and both descriptions are of the fitted resref {origin}, a asks 3 and b asks 0 and b answers the resref and the entered hilt takes 1 {premises}, c asks {:?} at level {} {shape_c}, swap {swap}, the slot names the part {named}, both hilts take the kind there {slots}, nothing swapped {swapped}, result {result:?}, kept {kept}",
                 part_c.upgrade,
                 part_c.upgrade_level
             ),
@@ -1834,7 +1906,7 @@ fn colour_refusal_checks() -> Checks {
         && wanted_b.upgrade == Some((0, 1))
         && wanted_b.upgrade_level == 0
         && descriptions_of(&wanted_a, &wanted_b, "shared_part", false)
-        && hilt_could_take(&first, "slot_saber", &wanted_a)
+        && hilt_could_take(&first, "slot_saber", 1, &wanted_a)
         && shared.template == "shared_part"
         && shared.upgrade == Some((0, 1))
         && shared.upgrade_level == 0
@@ -1866,7 +1938,7 @@ fn colour_refusal_checks() -> Checks {
                 && kept
                 && swapped,
             format!(
-                "holds a {holds_a}, holds b {holds_b}, a asks {}, c asks {}, swap {swap}, the slot names the part {named}, both hilts take the kind there {slots}, result {result:?}, kept {kept}",
+                "holds a {holds_a}, holds b {holds_b}, a asks {}, c asks {}, swap {swap}, the slot names the part {named}, both hilts take the kind there {slots}, result {result:?}, kept {kept}, nothing swapped {swapped}",
                 wanted_a.upgrade_level, shared.upgrade_level
             ),
         ),
@@ -1908,7 +1980,7 @@ fn colour_refusal_checks() -> Checks {
         && wanted_c.template == crate::inventory::own_template("shared_part", "c")
         && entered.get("shared_part") == Some(&wanted_c)
         && descriptions_of(&wanted_a, &wanted_b, "shared_part", false)
-        && hilt_could_take(&left, "slot_saber", &wanted_a)
+        && hilt_could_take(&left, "slot_saber", 1, &wanted_a)
         && hilt_level(&entered, "slot_saber_red") == 1;
     let new = state
         .make_item(&entered, "new_crystal", PARTY, 1, None)
@@ -1945,23 +2017,22 @@ fn colour_refusal_checks() -> Checks {
     let named = fitted_names(&before, saber, 1, "shared_part");
     let slots = both_slots_take(&entered, "slot_saber", "slot_saber_red", 1, 1);
     let reaches = swap && named && slots;
-    let exact = holds_a
-        && holds_b
-        && asks
-        && reaches
-        && world.script_state().known == before.known
-        && goods == expected
-        && world.script_state().next_item == next + 1
-        && out_same(&out, &before_out)
-        && count(&world, "new_crystal") == 0
-        && items_in_play(&world) == 2
-        && the_rest_unchanged(&before, world.script_state());
+    let parts = swap_outcome(
+        &world,
+        &before,
+        (&out, &before_out),
+        &expected,
+        next,
+        "new_crystal",
+        2,
+    );
+    let exact = holds_a && holds_b && asks && reaches && parts.iter().all(|(_, ok)| *ok);
     checks.push((
         "a colour swap goes ahead when every description of the fitted part allows it",
         check(
             result.is_ok() && exact,
             format!(
-                "holds a {holds_a}, holds b {holds_b}, a asks {}, b asks {}, c asks {}, result {result:?}, goods {goods:?}",
+                "holds a {holds_a}, holds b {holds_b}, a asks {}, b asks {}, c asks {}, outcome {parts:?}, result {result:?}, goods {goods:?}",
                 wanted_a.upgrade_level,
                 wanted_b.upgrade_level,
                 wanted_c.upgrade_level
@@ -1996,7 +2067,7 @@ fn colour_refusal_checks() -> Checks {
         && wanted_b.upgrade == Some((0, 1))
         && wanted_b.upgrade_level == 3
         && descriptions_of(&wanted_a, &wanted_b, "shared_part", false)
-        && hilt_could_take(&left, "slot_saber", &wanted_a)
+        && hilt_could_take(&left, "slot_saber", 1, &wanted_a)
         && hilt_level(&entered, "slot_saber_red") == 1;
     let new = state
         .make_item(&entered, "new_crystal", PARTY, 1, None)
@@ -2024,7 +2095,7 @@ fn colour_refusal_checks() -> Checks {
                 && kept
                 && swapped,
             format!(
-                "holds a {holds_a}, reads higher {reads_higher}, swap {swap}, the slot names the part {named}, both hilts take the kind there {slots}, result {result:?}, kept {kept}"
+                "holds a {holds_a}, reads higher {reads_higher}, swap {swap}, the slot names the part {named}, both hilts take the kind there {slots}, result {result:?}, kept {kept}, nothing swapped {swapped}"
             ),
         ),
     ));
