@@ -400,12 +400,6 @@ pub fn inspect(save: &Save, catalog: Option<&Catalog>) -> OwnershipReport {
                 // level, so the bench's level rule does not speak of those.
                 let from_the_template = facts
                     .is_some_and(|facts| facts.parts.get(slot).map(String::as_str) == Some(part));
-                // What the colour route installs in a colour slot is a crystal
-                // that recolours another hilt this module catalogues, which is
-                // what its own route test asks for.
-                let colour_part = described.is_some_and(|part_facts| {
-                    facts.is_some_and(|host| recolours_a_catalogued_hilt(catalog, host, part_facts))
-                });
                 let why = match (declared, described.is_some(), upgrade) {
                     (None, _, _) => Some(format!(
                         "item {id} has the part {part} in slot {slot}, which its host's facts do not declare"
@@ -413,15 +407,14 @@ pub fn inspect(save: &Save, catalog: Option<&Catalog>) -> OwnershipReport {
                     (_, false, _) => Some(format!(
                         "item {id} has the part {part} in slot {slot}, which neither the module nor the save describes"
                     )),
-                    // A colour slot holds what the colour route installed: a
-                    // crystal that recolours a hilt. The route changes the
-                    // hilt's own template instead of fitting an upgrade, so
-                    // such a part needs no upgrade of its own. Anything else
-                    // there is a part this save cannot explain.
-                    (Some(COLOUR_SLOT), true, None) if colour_part => None,
-                    (Some(COLOUR_SLOT), true, None) => Some(format!(
-                        "item {id} has the part {part} in colour slot {slot}, which is no crystal that recolours a hilt this module catalogues"
-                    )),
+                    // A colour slot is held to the same rule as any other slot,
+                    // because that is what the engine's own fit does. `fit` takes
+                    // the colour route only when the part recolours a hilt other
+                    // than the host, and that route changes the hilt's template
+                    // instead of filling a slot; what it leaves to the slot route
+                    // has to be an upgrade of the slot's kind. So a part in a
+                    // colour slot with no upgrade of its own is one this save
+                    // cannot explain, whichever hilts its facts name.
                     (Some(_), true, None) => Some(format!(
                         "item {id} has the part {part} in slot {slot}, which is not an upgrade this module or the save describes"
                     )),
