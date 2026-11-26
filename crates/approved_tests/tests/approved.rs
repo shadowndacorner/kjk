@@ -4385,10 +4385,13 @@ fn real_mods() {
 /// TSL's workbench, lab station and upgrade bench (`kjk sim probes --only
 /// workbench`): breakdowns and the yield by skill, items made, refusals with
 /// the game's lines, components as a count, and the upgrade bench's
-/// Assemble. The sim alone (proposed 2026-11-17, awaiting approval).
+/// Assemble. The sim alone (proposed 2026-11-17, awaiting approval). The
+/// count is the exact number of checks the group pushes (twelve in the group
+/// itself, four from the upgrade bench's Assemble, four from the checks of a
+/// stack of upgraded pistols), so dropping a check turns this test red.
 #[test]
 fn workbench() {
-    probed("workbench", &sim::workshop_probes::probes(), 17);
+    probed("workbench", &sim::workshop_probes::probes(), 20);
 }
 
 /// An upgrade taken out returns exactly one equivalent unit, and a refused
@@ -4412,7 +4415,7 @@ fn workshop_colour_mapping_refused() {
     probed(
         "workshop colour mapping refused",
         &sim::workshop_probes::colour_refusal_probes(),
-        19,
+        20,
     );
 }
 
