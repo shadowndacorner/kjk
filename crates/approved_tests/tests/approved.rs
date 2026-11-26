@@ -735,13 +735,14 @@ fn fight_light_rooms() {
 /// is in every room with a floor whose bounds hold it, so a camera in the
 /// wall between two rooms shows what both rooms see. A sky's bounds do not
 /// count. Outside every room it is in none, and every room shows. Needs
-/// `--features rig`; no installs. (proposed 2026-11-15, #464)
+/// `--features rig`; no installs. (proposed 2026-11-15, #464; a fifth check
+/// proposed 2026-11-23, #638)
 #[test]
 fn camera_rooms() {
     #[cfg(not(feature = "rig"))]
     println!("camera_rooms skipped: run with --features rig (builds kjk's library)");
     #[cfg(feature = "rig")]
-    probed("camera rooms", &kjk::probes::camera_rooms(), 4);
+    probed("camera rooms", &kjk::probes::camera_rooms(), 5);
 }
 
 /// What the capsule shadows send the shader (`kjk::probes::capsule_shadows`),
@@ -3044,6 +3045,7 @@ fn opaque_alpha_channel_is_no_alpha() {
         missing_mips: 0,
         declared_size: None,
         mips_stored: true,
+        header_key: None,
     };
     let rgba = |last: u8| {
         let mut data = [200, 200, 200, 255].repeat(16);
@@ -3585,7 +3587,7 @@ fn gui_layouts() {
         println!("{mark} {}: {}", check.name, check.detail);
     }
     let failed: Vec<&str> = checks.iter().filter(|c| !c.ok).map(|c| c.name).collect();
-    assert!(checks.len() >= 75, "probes went missing");
+    assert!(checks.len() >= 193, "probes went missing");
     assert!(failed.is_empty(), "gui probes failed: {failed:?}");
 
     let discovery = discovery();
@@ -4388,7 +4390,7 @@ fn real_mods() {
 /// Assemble. The sim alone (proposed 2026-11-17, awaiting approval).
 #[test]
 fn workbench() {
-    probed("workbench", &sim::workshop_probes::probes(), 16);
+    probed("workbench", &sim::workshop_probes::probes(), 23);
 }
 
 /// An upgrade taken out returns exactly one equivalent unit, and a refused
@@ -4937,7 +4939,7 @@ fn item_properties() {
 /// awaiting approval); the sim alone.
 #[test]
 fn switch_player_character() {
-    probed("switch", &sim::switch::probes(), 27);
+    probed("switch", &sim::switch::probes(), 31);
 }
 
 /// Encounters count the drivers (I31): `sim::scaling::probes`, and
@@ -5057,7 +5059,7 @@ fn feats() {
 fn save_copy_round_trip() {
     probed("save copies", &saves::copies::probes(), 12);
     probed("save refusals", &saves::refusal_probes(), 14);
-    probed("save story", &saves::story_probes(), 15);
+    probed("save story", &saves::story_probes(), 22);
 }
 
 /// The save editor's ground (`edit::probes::all`, approved 2026-11-04) and
@@ -5068,7 +5070,7 @@ fn save_copy_round_trip() {
 #[test]
 fn save_edits() {
     probed("save edits", &edit::probes::all(), 31);
-    probed("save editor", &save_editor::probes::all(), 0);
+    probed("save editor", &save_editor::probes::all(), 24);
 }
 
 /// The saves' safety net (`saves::safety_probes`): the meta's new fields
