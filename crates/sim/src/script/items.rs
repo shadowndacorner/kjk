@@ -18,7 +18,7 @@ use crate::combat::sheet::{Sheet, Weapon};
 use crate::inventory::properties::Wearer;
 use crate::inventory::{
     CREDITS, CRYSTAL, Catalog, Cost, FIRST_ITEM, Held, Item, ItemFacts, PARTY, has_upgrade, pairs,
-    properties, rewear, slots, upgrade_bit,
+    properties, resref_of, rewear, slots, upgrade_bit,
 };
 use crate::notice::Notice;
 
@@ -726,7 +726,28 @@ impl State {
             let Some(new_kind) = new_facts.slot_kinds.get(slot) else {
                 return false;
             };
-            let Some(part_facts) = self.item_facts(catalog, part) else {
+            // A fitted part is named by its template, and TSL's save slots
+            // name it by a bare resref. Resolve it to one part: the module's
+            // catalog, then a carried-forward template that matches exactly,
+            // then a carried template whose resref matches. Two carried
+            // templates answering for one resref describe different parts, so
+            // the swap cannot be certified and refuses.
+            let part_facts = catalog
+                .get(part)
+                .or_else(|| self.known.get(part))
+                .or_else(|| {
+                    let same: Vec<&ItemFacts> = self
+                        .known
+                        .values()
+                        .filter(|facts| resref_of(&facts.template) == part)
+                        .collect();
+                    if same.len() == 1 {
+                        same.into_iter().next()
+                    } else {
+                        None
+                    }
+                });
+            let Some(part_facts) = part_facts else {
                 return false;
             };
             let Some((_, part_kind)) = part_facts.upgrade else {

@@ -31,7 +31,7 @@ use crate::combat::Sheet;
 use crate::input::{Command, Seat, TickInput};
 use crate::inventory::properties::{Limit, Property, Upgrade};
 use crate::inventory::workshop::{self, Pool, Recipe, Workshop};
-use crate::inventory::{COLOUR_SLOT, Catalog, ItemFacts, PARTY, slots};
+use crate::inventory::{COLOUR_SLOT, Catalog, Item, ItemFacts, PARTY, slots};
 use crate::notice::{Notice, Screen};
 use crate::probe::{Checks, check};
 use crate::script::workbench::{ACQUIRED_COMPONENTS, BROKEN, MADE, sound};
@@ -447,6 +447,26 @@ fn colour_known_catalog() -> Catalog {
     Catalog::new([old_saber, new_saber, old, new])
 }
 
+/// As above, with two carried templates that both answer for one bare
+/// resref and describe parts of different levels. The old hilt takes a
+/// part of level 3; its new colour's hilt takes only level 1.
+fn ambiguous_known_catalog() -> Catalog {
+    let old_saber = ItemFacts {
+        upgrade_level: 3,
+        ..host("slot_saber", vec![0, 1], slots::RIGHT_WEAPON)
+    };
+    let new_saber = host("slot_saber_red", vec![0, 1], slots::RIGHT_WEAPON);
+    let old = ItemFacts {
+        recolours: vec!["slot_saber".into()],
+        ..part("old_crystal", 0, 0, Vec::new())
+    };
+    let new = ItemFacts {
+        recolours: vec!["slot_saber_red".into()],
+        ..part("new_crystal", 0, 0, Vec::new())
+    };
+    Catalog::new([old_saber, new_saber, old, new])
+}
+
 fn slot_catalog() -> Catalog {
     Catalog::new([
         host("slot_saber", vec![COLOUR_SLOT, 0], slots::RIGHT_WEAPON),
@@ -488,85 +508,108 @@ fn stack_of(world: &SimWorld, template: &str) -> u16 {
         .sum()
 }
 
-/// Every field `Out` has, named. `out_same` compares each one; a new field
-/// makes this fail to compile until `out_same` compares it too.
-fn audit_out_fields(out: &Out) {
-    let Out {
-        changes: _,
-        notices: _,
-        goals: _,
-        intents: _,
-        area_sound: _,
-        fade: _,
-        world_fade_in: _,
-        video_effect: _,
-        new_module: _,
-        worn_before: _,
-        made: _,
-        deleted: _,
-        destroyed: _,
-        minigame: _,
-        lost: _,
-        statuses: _,
-        feedback: _,
-        assigned: _,
-    } = out;
-}
-
-/// What the party carries: for each item its id, template, holder, slot,
-/// stack, K1 upgrade bits and TSL fitted parts, in id order.
-type Bench = Vec<(u32, String, u32, Option<u8>, u16, u32, Vec<String>)>;
-
-/// Every item the party carries. What a workbench transaction leaves,
-/// stated exactly.
-fn party_goods(world: &SimWorld) -> Bench {
+/// The party's whole pack: every item it carries, with its number, in id
+/// order. What a workbench transaction leaves, stated exactly.
+fn party_goods(world: &SimWorld) -> Vec<(u32, Item)> {
     world
         .script_state()
         .items
         .held_by(PARTY)
-        .map(|(id, held)| {
-            (
-                id,
-                held.template.clone(),
-                held.holder,
-                held.slot,
-                held.stack,
-                held.upgrades,
-                held.fitted.clone(),
-            )
-        })
+        .map(|(id, held)| (id, held.clone()))
         .collect()
 }
 
-/// An upgrade taken out returns exactly one unit and the item keeps the
-/// rest of its holdings. `audit_out_fields` covers every field `Out` has.
-fn out_same(a: &Out, b: &Out) -> bool {
-    a.changes == b.changes
-        && a.notices == b.notices
-        && a.goals == b.goals
-        && a.intents == b.intents
-        && a.area_sound == b.area_sound
-        && a.fade == b.fade
-        && a.world_fade_in == b.world_fade_in
-        && a.video_effect == b.video_effect
-        && a.new_module == b.new_module
-        && a.worn_before == b.worn_before
-        && a.made == b.made
-        && a.deleted == b.deleted
-        && a.destroyed == b.destroyed
-        && a.minigame == b.minigame
-        && a.lost == b.lost
-        && a.statuses == b.statuses
-        && a.feedback == b.feedback
-        && a.assigned == b.assigned
+/// An expected carried item: `id`, of `template`, carried loose, `stack`
+/// units, K1 upgrade bits `upgrades` and TSL `fitted` parts, with the
+/// charges and flags a fresh item of the module's catalog gets.
+fn carried(id: u32, template: &str, stack: u16, upgrades: u32, fitted: Vec<String>) -> (u32, Item) {
+    (
+        id,
+        Item {
+            template: template.to_string(),
+            holder: PARTY,
+            slot: None,
+            stack,
+            charges: 0,
+            droppable: true,
+            plot: false,
+            identified: true,
+            infinite: false,
+            non_equippable: false,
+            upgrades,
+            fitted,
+        },
+    )
 }
+
+/// Whether two step outputs are the same. Each is destructured field by
+/// field, so a field added to `Out` stops compiling here until this
+/// function compares it: the pattern has to name it, and the tuples just
+/// below are where it gets compared.
+fn out_same(a: &Out, b: &Out) -> bool {
+    let Out {
+        changes,
+        notices,
+        goals,
+        intents,
+        area_sound,
+        fade,
+        world_fade_in,
+        video_effect,
+        new_module,
+        worn_before,
+        made,
+        deleted,
+        destroyed,
+        minigame,
+        lost,
+        statuses,
+        feedback,
+        assigned,
+    } = a;
+    (
+        changes,
+        notices,
+        goals,
+        intents,
+        area_sound,
+        fade,
+        world_fade_in,
+        video_effect,
+        new_module,
+        worn_before,
+        made,
+    ) == (
+        &b.changes,
+        &b.notices,
+        &b.goals,
+        &b.intents,
+        &b.area_sound,
+        &b.fade,
+        &b.world_fade_in,
+        &b.video_effect,
+        &b.new_module,
+        &b.worn_before,
+        &b.made,
+    ) && (
+        deleted, destroyed, minigame, lost, statuses, feedback, assigned,
+    ) == (
+        &b.deleted,
+        &b.destroyed,
+        &b.minigame,
+        &b.lost,
+        &b.statuses,
+        &b.feedback,
+        &b.assigned,
+    )
+}
+
 /// An output with a value in every field a workbench step can leave alone
 /// except the minigame course, which no workbench path touches. A refusal
 /// has to leave all of it as it was, so the probes compare against this
 /// rather than an empty output.
 fn seeded_out() -> Out {
     let mut out = Out::default();
-    audit_out_fields(&out);
     out.intents.insert(
         1,
         crate::script::actions::Intent {
@@ -748,6 +791,7 @@ fn return_atomic_checks() -> Checks {
     drop(held);
     world.set_script_state(state.clone());
     let next = world.script_state().next_item;
+    let known = world.script_state().known.clone();
     let row1 = crate::inventory::upgrade_bit(1).expect("row 1");
     let mut out = seeded_out();
     let before_out = out.clone();
@@ -758,21 +802,17 @@ fn return_atomic_checks() -> Checks {
     // the crystal comes back to the party as an item of its own. Two new
     // items and no output change.
     let expected = vec![
-        (saber, "saber".to_string(), PARTY, None, 1, row1, Vec::new()),
-        (
+        carried(saber, "saber", 1, row1, Vec::new()),
+        carried(
             crate::inventory::FIRST_ITEM + next,
-            "saber".to_string(),
-            PARTY,
-            None,
+            "saber",
             1,
             0,
             Vec::new(),
         ),
-        (
+        carried(
             crate::inventory::FIRST_ITEM + next + 1,
-            "crystal".to_string(),
-            PARTY,
-            None,
+            "crystal",
             1,
             0,
             Vec::new(),
@@ -781,7 +821,8 @@ fn return_atomic_checks() -> Checks {
     let goods = party_goods(&world);
     let exact = goods == expected
         && world.script_state().next_item == next + 2
-        && out_same(&out, &before_out);
+        && out_same(&out, &before_out)
+        && world.script_state().known == known;
     checks.push((
         "a stacked K1 host is split before a direct removal, leaving an exact bench",
         check(
@@ -800,6 +841,7 @@ fn return_atomic_checks() -> Checks {
     drop(held);
     world.set_script_state(state.clone());
     let next = world.script_state().next_item;
+    let known = world.script_state().known.clone();
     let mut out = seeded_out();
     let before_out = out.clone();
     let mut state = world.script_state().clone();
@@ -808,12 +850,10 @@ fn return_atomic_checks() -> Checks {
     // One unit of the stack gains the crystal and is added back beside the
     // plain one; the crystal the party carried is gone. One new item.
     let expected = vec![
-        (saber, "saber".to_string(), PARTY, None, 1, 0, Vec::new()),
-        (
+        carried(saber, "saber", 1, 0, Vec::new()),
+        carried(
             crate::inventory::FIRST_ITEM + next,
-            "saber".to_string(),
-            PARTY,
-            None,
+            "saber",
             1,
             row1,
             Vec::new(),
@@ -822,7 +862,9 @@ fn return_atomic_checks() -> Checks {
     let goods = party_goods(&world);
     let exact = goods == expected
         && world.script_state().next_item == next + 1
-        && out_same(&out, &before_out);
+        && out_same(&out, &before_out)
+        && count(&world, "bench_crystal") == 0
+        && world.script_state().known == known;
     checks.push((
         "a stacked K1 host is split before a direct fitting, leaving an exact bench",
         check(
@@ -953,26 +995,23 @@ fn colour_refusal_checks() -> Checks {
     drop(held);
     world.set_script_state(state);
     let next = world.script_state().next_item;
+    let known = world.script_state().known.clone();
     let mut out = seeded_out();
     let before_out = out.clone();
     let mut state = world.script_state().clone();
     let result = state.fit(&catalog, &mut out, saber, new, None);
     world.set_script_state(state);
     let expected = vec![
-        (
+        carried(
             saber,
-            "slot_saber_red".to_string(),
-            PARTY,
-            None,
+            "slot_saber_red",
             1,
             0,
             vec!["hi_crystal".to_string(), String::new()],
         ),
-        (
+        carried(
             crate::inventory::FIRST_ITEM + next,
-            "old_crystal".to_string(),
-            PARTY,
-            None,
+            "old_crystal",
             1,
             0,
             Vec::new(),
@@ -981,7 +1020,9 @@ fn colour_refusal_checks() -> Checks {
     let goods = party_goods(&world);
     let exact = goods == expected
         && world.script_state().next_item == next + 1
-        && out_same(&out, &before_out);
+        && out_same(&out, &before_out)
+        && count(&world, "new_crystal") == 0
+        && world.script_state().known == known;
     checks.push((
         "a colour swap keeps a crystal of a level above the hilt's own",
         check(
@@ -995,8 +1036,10 @@ fn colour_refusal_checks() -> Checks {
     let saber = give_with(&mut world, &catalog, "slot_saber", PARTY, None);
     let new = give_with(&mut world, &catalog, "new_crystal", PARTY, None);
     let mut state = world.script_state().clone();
+    // TSL's save slots name a fitted part by its bare resref; the carried
+    // facts are keyed by its full template.
     state.known.insert(
-        "off_catalog".to_string(),
+        crate::inventory::own_template("off_catalog", "m"),
         part("off_catalog", 1, 0, Vec::new()),
     );
     let mut held = state.items.get_mut(&saber).expect("slot_saber");
@@ -1004,26 +1047,23 @@ fn colour_refusal_checks() -> Checks {
     drop(held);
     world.set_script_state(state);
     let next = world.script_state().next_item;
+    let known = world.script_state().known.clone();
     let mut out = seeded_out();
     let before_out = out.clone();
     let mut state = world.script_state().clone();
     let result = state.fit(&catalog, &mut out, saber, new, None);
     world.set_script_state(state);
     let expected = vec![
-        (
+        carried(
             saber,
-            "slot_saber_red".to_string(),
-            PARTY,
-            None,
+            "slot_saber_red",
             1,
             0,
             vec![String::new(), "off_catalog".to_string()],
         ),
-        (
+        carried(
             crate::inventory::FIRST_ITEM + next,
-            "old_crystal".to_string(),
-            PARTY,
-            None,
+            "old_crystal",
             1,
             0,
             Vec::new(),
@@ -1032,12 +1072,44 @@ fn colour_refusal_checks() -> Checks {
     let goods = party_goods(&world);
     let exact = goods == expected
         && world.script_state().next_item == next + 1
-        && out_same(&out, &before_out);
+        && out_same(&out, &before_out)
+        && count(&world, "new_crystal") == 0
+        && world.script_state().known == known;
     checks.push((
         "a colour swap keeps a part only State::known describes",
         check(
             result.is_ok() && exact,
             format!("result {result:?}, goods {goods:?}"),
+        ),
+    ));
+
+    let catalog = ambiguous_known_catalog();
+    let mut world = colour_world(catalog.clone());
+    let saber = give_with(&mut world, &catalog, "slot_saber", PARTY, None);
+    let new = give_with(&mut world, &catalog, "new_crystal", PARTY, None);
+    let mut state = world.script_state().clone();
+    for module in ["a", "b"] {
+        let template = crate::inventory::own_template("one_resref", module);
+        let level = if module == "a" { 0 } else { 3 };
+        state
+            .known
+            .insert(template.clone(), part(&template, 1, level, Vec::new()));
+    }
+    let mut held = state.items.get_mut(&saber).expect("slot_saber");
+    held.fitted = vec![String::new(), "one_resref".into()];
+    drop(held);
+    world.set_script_state(state.clone());
+    let before = state.clone();
+    let mut out = seeded_out();
+    let before_out = out.clone();
+    let result = state.fit(&catalog, &mut out, saber, new, None);
+    let kept = state == before && out_same(&out, &before_out);
+    world.set_script_state(state);
+    checks.push((
+        "two carried templates answering for one fitted resref refuse the colour swap",
+        check(
+            result.is_err() && kept,
+            format!("result {result:?}, kept {kept}"),
         ),
     ));
     checks
