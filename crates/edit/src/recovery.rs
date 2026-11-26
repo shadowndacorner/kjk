@@ -2,13 +2,14 @@
 //!
 //! This counts what a save actually holds once, without writing, renaming or
 //! listing the saves folder. It says who holds each item, where the facts of
-//! its template came from, and which items the save cannot explain.
+//! its template came from, whether the parts installed in it are described
+//! anywhere, and which items the save cannot explain.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use sim::inventory::{COLOUR_SLOT, Catalog, Item, ItemFacts, PARTY, facts_in_play};
 use sim::module::ObjectKind;
-use sim::{Kind, Save, SimId};
+use sim::{EntityState, Kind, Save, SimId};
 
 /// Who holds one item, as the save says it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,7 +34,8 @@ pub enum Holding {
     /// holder; what it holds there is the anomaly.
     AreaObject,
     /// Nothing in the save answers for `holder`: no character, no floor
-    /// entry and no object of the area.
+    /// entry and no object of the area, in this module or in the ones the
+    /// save has already played.
     Unknown,
 }
 
@@ -52,6 +54,28 @@ pub enum Facts {
     NotChecked,
 }
 
+/// How the save shows that an item carries a colour part.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Colour {
+    /// A part sits in one of the item's colour slots, which is how a fitted
+    /// colour crystal is saved.
+    Fitted,
+    /// Nothing in a colour slot, and this module's catalog has a colour
+    /// crystal that names the item's template among the hilts it recolours.
+    /// A colour swap changes the hilt's own template and fits nothing else, so
+    /// this is how a recoloured hilt is saved. The catalog cannot say whether
+    /// such a template is the colour a hilt took or the hilt a colour came off,
+    /// so a swap between two hilts shows up on both.
+    Template,
+    /// Neither sign, with a catalog to ask.
+    None,
+    /// A catalog was given, but the item's own template is not described, so
+    /// its colour slots cannot be found and nothing is claimed.
+    Unknown,
+    /// No catalog was given, so nothing was checked and nothing is claimed.
+    NotChecked,
+}
+
 /// One item in the save, counted once.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ItemOwnership {
@@ -64,19 +88,29 @@ pub struct ItemOwnership {
     pub facts: Facts,
     /// A store's stock, whose stack is a count the game never spends.
     pub infinite: bool,
-    /// KOTOR's fitted upgrade rows, as bits set.
+    /// How many identical units this id stands for: an item that stacks joins
+    /// units with the same fields, so its installed parts are there once per
+    /// unit. A store's stock is one row of unsent stock, so it counts once.
+    pub units: usize,
+    /// KOTOR's fitted upgrade rows, as bits set, over every unit.
     pub kotor_rows: usize,
-    /// TSL's fitted upgrade slots whose template is not empty.
+    /// TSL's fitted upgrade slots whose template is not empty, over every unit.
     pub tsl_slots: usize,
-    /// A TSL colour crystal fitted in a lightsaber's colour slot.
-    pub colour: bool,
+    /// Fitted parts, or rows, that neither the module's catalog nor the save's
+    /// carried facts describe. Counted per id, not per unit.
+    pub unresolved_parts: usize,
+    pub unlisted_rows: usize,
+    /// How the save shows a colour part on this item.
+    pub colour: Colour,
 }
 
 /// What a save holds, counted once.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnershipReport {
     pub items: Vec<ItemOwnership>,
-    /// The stacks that are not a store's stock, summed over every holder.
+    /// The sum of every finite stack, in every holder: a store's stock is left
+    /// out because its stack is a count the game never spends, and everything
+    /// else counts, including an item that has a zero stack.
     pub units: u64,
     pub party_loose: usize,
     pub carried: usize,
@@ -91,30 +125,39 @@ pub struct OwnershipReport {
     pub infinite: usize,
     pub kotor_rows: usize,
     pub tsl_slots: usize,
+    pub parts_unresolved: usize,
+    pub rows_unlisted: usize,
+    /// Items that carry a colour part: the ones with a part in a colour slot
+    /// plus the ones whose own template a colour crystal recolours. Each item
+    /// counts once, whichever sign it shows.
     pub colours: usize,
+    pub colour_fitted: usize,
+    pub colour_by_template: usize,
+    pub colour_unknown: usize,
     pub facts_carried: usize,
     pub facts_absent: usize,
     pub unknown_holders: Vec<u32>,
     pub ambiguities: Vec<String>,
 }
 
-/// Whether the facts say this item wears a colour crystal in a colour slot.
-fn colour_slot(facts: Option<&ItemFacts>, fitted: &[String]) -> bool {
-    let Some(at) = facts.and_then(|facts| {
-        facts
-            .slot_kinds
+/// Every object the save names: this module's entities, and those of the
+/// modules it has already played, which the save keeps in its stash. An item
+/// can still be held by an object of a module the party left: the holder stays
+/// in the item table while the body is in the stash.
+fn entities(save: &Save) -> impl Iterator<Item = &EntityState> {
+    save.snapshot.entities.iter().chain(
+        save.snapshot
+            .stash
             .iter()
-            .position(|kind| *kind == COLOUR_SLOT)
-    }) else {
-        return false;
-    };
-    fitted.get(at).is_some_and(|part| !part.is_empty())
+            .flat_map(|left| left.entities.iter()),
+    )
 }
 
-/// What kind of area object `holder` is, if the save has such an object.
+/// What kind of area object `holder` is, if the save has such an object. An id
+/// names one object, in this module or in one already played.
 fn object_kind(save: &Save, holder: u32) -> Option<ObjectKind> {
-    save.snapshot
-        .get(SimId(holder))
+    entities(save)
+        .find(|entity| entity.id.0 == holder)
         .and_then(|entity| match entity.kind {
             Kind::Object(kind, _) => Some(kind),
             _ => None,
@@ -123,12 +166,11 @@ fn object_kind(save: &Save, holder: u32) -> Option<ObjectKind> {
 
 /// The bodies the save's characters have: every seat's player, and every
 /// companion the party lists, whether or not the save also carries that
-/// companion's sheet (`edit::characters` only reports the sheeted ones).
+/// companion's sheet (`edit::characters` only reports the sheeted ones), in
+/// this module or in one already played. A companion kept while away names its
+/// body only through the party table's `kept.from`.
 fn character_holders(save: &Save) -> HashSet<u32> {
-    let mut ids: HashSet<u32> = save
-        .snapshot
-        .entities
-        .iter()
+    let mut ids: HashSet<u32> = entities(save)
         .filter(|entity| matches!(entity.kind, Kind::Avatar(_)))
         .map(|entity| entity.id.0)
         .collect();
@@ -147,7 +189,8 @@ fn character_holders(save: &Save) -> HashSet<u32> {
 /// area's objects, or nothing the save names. An item worn in a slot by a
 /// holder nothing answers for is unknown too, not equipped. A save can keep
 /// listing an item among those lying on the floor after it was picked up, so
-/// the floor class needs the area as holder as well as the listing.
+/// the floor class needs the area as holder as well as the listing; an item the
+/// area holds that the save does not list is not on the floor either.
 fn holding(save: &Save, id: u32, item: &Item, known: &HashSet<u32>) -> Holding {
     if item.holder == PARTY {
         return Holding::PartyLoose;
@@ -171,6 +214,46 @@ fn holding(save: &Save, id: u32, item: &Item, known: &HashSet<u32>) -> Holding {
     }
 }
 
+/// How the save shows a colour part on `item`. A part in a colour slot wins:
+/// the template sign alone cannot tell a recoloured hilt from the hilt the
+/// colour came off, so it is only reported when there is no part to read.
+fn colour_sign(catalog: Option<&Catalog>, facts: Option<&ItemFacts>, item: &Item) -> Colour {
+    let Some(catalog) = catalog else {
+        return Colour::NotChecked;
+    };
+    let Some(facts) = facts else {
+        return Colour::Unknown;
+    };
+    let fitted = facts
+        .slot_kinds
+        .iter()
+        .position(|kind| *kind == COLOUR_SLOT)
+        .and_then(|at| item.fitted.get(at))
+        .is_some_and(|part| !part.is_empty());
+    if fitted {
+        return Colour::Fitted;
+    }
+    if catalog
+        .iter()
+        .any(|crystal| crystal.recolours.iter().any(|made| made == &item.template))
+    {
+        return Colour::Template;
+    }
+    Colour::None
+}
+
+/// How many identical units `item` stands for, and whether the count of its
+/// installed parts can be multiplied by it at all. A store's stock is one row
+/// of unsent stock; an item that claims no units at all is still one row of the
+/// save's item table, and its installed parts are counted once (and the empty
+/// stack is reported as an anomaly).
+fn units(item: &Item) -> Option<usize> {
+    if item.infinite {
+        return Some(1);
+    }
+    usize::from(item.stack).max(1).into()
+}
+
 /// What `save` holds. This reads only `save` and `catalog`: it writes no
 /// files and leaves the save byte-for-byte as it was.
 pub fn inspect(save: &Save, catalog: Option<&Catalog>) -> OwnershipReport {
@@ -190,7 +273,12 @@ pub fn inspect(save: &Save, catalog: Option<&Catalog>) -> OwnershipReport {
         infinite: 0,
         kotor_rows: 0,
         tsl_slots: 0,
+        parts_unresolved: 0,
+        rows_unlisted: 0,
         colours: 0,
+        colour_fitted: 0,
+        colour_by_template: 0,
+        colour_unknown: 0,
         facts_carried: 0,
         facts_absent: 0,
         unknown_holders: Vec::new(),
@@ -219,10 +307,63 @@ pub fn inspect(save: &Save, catalog: Option<&Catalog>) -> OwnershipReport {
                 }
             }
         };
-        let kotor_rows = item.upgrades.count_ones() as usize;
-        let tsl_slots = item.fitted.iter().filter(|part| !part.is_empty()).count();
-        let colour = colour_slot(facts, &item.fitted);
-        if kotor_rows != 0 && tsl_slots != 0 {
+        let rows = item.upgrades.count_ones() as usize;
+        let fitted = item.fitted.iter().filter(|part| !part.is_empty()).count();
+        // Each unit of a stack carries the same installed parts, so the count
+        // of parts follows the stack; `State::one_of` splits one unit out to
+        // edit it, which is how a stack of upgraded items comes about.
+        let units = units(item);
+        let (kotor_rows, tsl_slots) = match units {
+            Some(units) => match (rows.checked_mul(units), fitted.checked_mul(units)) {
+                (Some(rows), Some(slots)) => (rows, slots),
+                _ => {
+                    report.ambiguities.push(format!(
+                        "item {id} holds more installed parts than can be counted"
+                    ));
+                    (rows, fitted)
+                }
+            },
+            None => {
+                report
+                    .ambiguities
+                    .push(format!("item {id} has a stack that cannot be counted"));
+                (rows, fitted)
+            }
+        };
+        // The parts installed in the item have to be described somewhere too,
+        // or the item is only half accounted for.
+        let mut unresolved_parts = 0;
+        if let Some(catalog) = catalog {
+            for (slot, part) in item.fitted.iter().enumerate() {
+                if part.is_empty() {
+                    continue;
+                }
+                if facts_in_play(catalog, &save.script.known, part).is_none() {
+                    unresolved_parts += 1;
+                    report.ambiguities.push(format!(
+                        "item {id} has the part {part} in slot {slot}, which neither the module nor the save describes"
+                    ));
+                }
+            }
+        }
+        // And a KOTOR row the item says is fitted has to be a row the host's
+        // facts list.
+        let mut unlisted_rows = 0;
+        if let Some(facts) = facts {
+            for row in 0..32 {
+                if item.upgrades & (1u32 << row) == 0 {
+                    continue;
+                }
+                if facts.takes(row as u8).is_none() {
+                    unlisted_rows += 1;
+                    report.ambiguities.push(format!(
+                        "item {id} carries KOTOR upgrade row {row}, which its host's facts do not list"
+                    ));
+                }
+            }
+        }
+        let colour = colour_sign(catalog, facts, item);
+        if rows != 0 && fitted != 0 {
             report.ambiguities.push(format!(
                 "item {id} holds both KOTOR upgrade rows and TSL fitted slots"
             ));
@@ -239,8 +380,19 @@ pub fn inspect(save: &Save, catalog: Option<&Catalog>) -> OwnershipReport {
         }
         report.kotor_rows += kotor_rows;
         report.tsl_slots += tsl_slots;
-        if colour {
-            report.colours += 1;
+        report.parts_unresolved += unresolved_parts;
+        report.rows_unlisted += unlisted_rows;
+        match colour {
+            Colour::Fitted => {
+                report.colours += 1;
+                report.colour_fitted += 1;
+            }
+            Colour::Template => {
+                report.colours += 1;
+                report.colour_by_template += 1;
+            }
+            Colour::Unknown => report.colour_unknown += 1,
+            Colour::None | Colour::NotChecked => {}
         }
         match holding {
             Holding::PartyLoose => report.party_loose += 1,
@@ -273,8 +425,11 @@ pub fn inspect(save: &Save, catalog: Option<&Catalog>) -> OwnershipReport {
             holding,
             facts: source,
             infinite: item.infinite,
+            units: units.unwrap_or(1),
             kotor_rows,
             tsl_slots,
+            unresolved_parts,
+            unlisted_rows,
             colour,
         });
     }
