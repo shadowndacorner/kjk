@@ -234,16 +234,39 @@ fn holding(save: &Save, id: u32, item: &Item, known: &HashSet<u32>) -> Holding {
 /// How the save shows a colour part on `item`. A part in a colour slot wins:
 /// the template sign alone cannot tell a recoloured hilt from the hilt the
 /// colour came off, so it is only reported when there is no part to read.
-fn colour_sign(catalog: Option<&Catalog>, facts: Option<&ItemFacts>, item: &Item) -> Colour {
+fn colour_sign(
+    catalog: Option<&Catalog>,
+    facts: Option<&ItemFacts>,
+    known: &std::collections::BTreeMap<String, ItemFacts>,
+    item: &Item,
+) -> Colour {
     let Some(catalog) = catalog else {
         return Colour::NotChecked;
     };
     let Some(facts) = facts else {
         return Colour::Unknown;
     };
-    let fitted = facts.slot_kinds.iter().enumerate().any(|(at, kind)| {
-        *kind == COLOUR_SLOT && item.fitted.get(at).is_some_and(|part| !part.is_empty())
-    });
+    let mut fitted = false;
+    for (at, kind) in facts.slot_kinds.iter().enumerate() {
+        if *kind != COLOUR_SLOT {
+            continue;
+        }
+        let Some(part) = item.fitted.get(at) else {
+            continue;
+        };
+        if part.is_empty() {
+            continue;
+        }
+        fitted = true;
+        // Only something that recolours a hilt is a colour part. A colour slot
+        // holding anything else leaves the colour unsettled rather than settled
+        // in favour of a swap.
+        let colour = facts_in_play(catalog, known, part)
+            .is_some_and(|part_facts| !part_facts.recolours.is_empty());
+        if !colour {
+            return Colour::Unknown;
+        }
+    }
     if fitted {
         return Colour::Fitted;
     }
@@ -352,6 +375,13 @@ pub fn inspect(save: &Save, catalog: Option<&Catalog>) -> OwnershipReport {
                 let described =
                     catalog.and_then(|catalog| facts_in_play(catalog, &save.script.known, part));
                 let upgrade = described.and_then(|part_facts| part_facts.upgrade);
+                let host_level = facts.map(|facts| facts.upgrade_level);
+                let part_level = described.map(|part_facts| part_facts.upgrade_level);
+                // Something that recolours a hilt is what the colour route
+                // installs, and it is the only thing a colour slot may hold
+                // without being an upgrade.
+                let recolours =
+                    described.is_some_and(|part_facts| !part_facts.recolours.is_empty());
                 let why = match (declared, described.is_some(), upgrade) {
                     (None, _, _) => Some(format!(
                         "item {id} has the part {part} in slot {slot}, which its host's facts do not declare"
@@ -359,17 +389,34 @@ pub fn inspect(save: &Save, catalog: Option<&Catalog>) -> OwnershipReport {
                     (_, false, _) => Some(format!(
                         "item {id} has the part {part} in slot {slot}, which neither the module nor the save describes"
                     )),
-                    // A colour slot is filled by the colour route, which
-                    // changes the hilt's own template and needs no upgrade
-                    // facts of its own: only the part's description is checked
-                    // there.
-                    (Some(COLOUR_SLOT), true, None) => None,
+                    // A colour slot holds what the colour route installed: a
+                    // crystal that recolours a hilt. The route changes the
+                    // hilt's own template instead of fitting an upgrade, so
+                    // such a part needs no upgrade of its own. Anything else
+                    // there is a part this save cannot explain.
+                    (Some(COLOUR_SLOT), true, None) if recolours => None,
+                    (Some(COLOUR_SLOT), true, None) => Some(format!(
+                        "item {id} has the part {part} in colour slot {slot}, which is not a crystal that recolours a hilt"
+                    )),
                     (Some(_), true, None) => Some(format!(
                         "item {id} has the part {part} in slot {slot}, which is not an upgrade this module or the save describes"
                     )),
                     (Some(kind), true, Some((_, part_kind))) if part_kind != kind => Some(format!(
                         "item {id} has the part {part} in slot {slot}, whose kind {part_kind} is not the kind {kind} its host declares"
                     )),
+                    // And the host has to be able to take the part: one of a
+                    // level above the host's own could not have been fitted
+                    // there, unless it is a crystal, which any hilt takes.
+                    (Some(_), true, Some((_, part_kind)))
+                        if part_kind != sim::inventory::CRYSTAL
+                            && part_level.unwrap_or(0) > host_level.unwrap_or(0) =>
+                    {
+                        Some(format!(
+                            "item {id} has the part {part} in slot {slot}, whose level {} is above the level {} its host takes",
+                            part_level.unwrap_or(0),
+                            host_level.unwrap_or(0)
+                        ))
+                    }
                     _ => None,
                 };
                 if let Some(why) = why {
@@ -394,7 +441,7 @@ pub fn inspect(save: &Save, catalog: Option<&Catalog>) -> OwnershipReport {
                 }
             }
         }
-        let colour = colour_sign(catalog, facts, item);
+        let colour = colour_sign(catalog, facts, &save.script.known, item);
         if rows != 0 && fitted != 0 {
             report.ambiguities.push(format!(
                 "item {id} holds both KOTOR upgrade rows and TSL fitted slots"
