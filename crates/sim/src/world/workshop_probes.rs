@@ -645,14 +645,24 @@ fn nothing_swapped(world: &SimWorld, given: &str, returned: &str) -> bool {
 /// The KOTOR 1 row `row` of `hilt` names a part this module really has, at
 /// that row and kind: the row is not a name floating free of the catalog.
 fn row_names_a_part(catalog: &Catalog, hilt: &str, row: u8) -> bool {
-    catalog
-        .get(hilt)
-        .and_then(|facts| facts.takes(row))
-        .is_some_and(|upgrade| {
-            catalog
-                .get(&upgrade.template)
-                .is_some_and(|part| part.upgrade == Some((u16::from(row), upgrade.kind)))
-        })
+    let Some(host) = catalog.get(hilt) else {
+        return false;
+    };
+    let Some(upgrade) = host.takes(row) else {
+        return false;
+    };
+    let Some(part) = catalog.get(&upgrade.template) else {
+        return false;
+    };
+    // The row has to name a part this bench could really have installed there.
+    // A part that recolours another hilt of the same base item goes through the
+    // colour route in `fit_inner` and never reaches a KOTOR 1 upgrade row, so a
+    // probe that preloads such a part into a row is describing a state the bench
+    // could not have made.
+    part.upgrade == Some((u16::from(row), upgrade.kind))
+        && catalog
+            .recolour(part, host.base_item)
+            .is_none_or(|made| made == host.template)
 }
 
 /// The two descriptions the probe is judging are descriptions of the resref
@@ -1446,6 +1456,10 @@ fn colour_refusal_checks() -> Checks {
         facts.upgrade == Some((0, crate::inventory::CRYSTAL))
             && facts.upgrade_level > hilt_level(&catalog, "slot_saber")
             && facts.upgrade_level > hilt_level(&catalog, "slot_saber_red")
+            // And it is a part the old hilt could hold in slot 0 at all: one
+            // that recolours the other hilt would be taken by the colour route
+            // instead of sitting in the slot.
+            && hilt_could_take(&catalog, "slot_saber", 0, facts)
     }) && before
         .items
         .get(&saber)
@@ -1853,6 +1867,10 @@ fn colour_refusal_checks() -> Checks {
         && part_b.upgrade == Some((0, 1))
         && part_b.upgrade_level == 0
         && entered.get("shared_part") == Some(&part_b)
+        // The first hop's new hilt takes level 1 as well: were it to take level
+        // 3, the first swap would have gone ahead and this probe would be
+        // replaying a state the first hop had already settled.
+        && hilt_level(&entered, "slot_saber_red") == 1
         && hilt_level(&third, "slot_saber_red") == 1;
     checks.push((
         "the facts of the module a part was fitted in survive a second module change",
