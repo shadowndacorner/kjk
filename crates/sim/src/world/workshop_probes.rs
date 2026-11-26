@@ -655,6 +655,31 @@ fn row_names_a_part(catalog: &Catalog, hilt: &str, row: u8) -> bool {
         })
 }
 
+/// The two descriptions the probe is judging are descriptions of the resref
+/// the save slot names. `same` says whether the probe means them to be the
+/// same template: two modules' own templates of one resref are different
+/// templates, and that is what makes the probe's disagreement real.
+fn descriptions_of(a: &ItemFacts, b: &ItemFacts, resref: &str, same: bool) -> bool {
+    crate::inventory::resref_of(&a.template) == resref
+        && crate::inventory::resref_of(&b.template) == resref
+        && (a.template == b.template) == same
+}
+
+/// The part could have been fitted in this hilt: the hilt has a slot of the
+/// part's kind, and the hilt takes the part's level (a crystal of any level
+/// fits, as `fit_inner` rules). A probe that writes a fitted part by hand has
+/// to say the part could have got there.
+fn hilt_could_take(catalog: &Catalog, hilt: &str, part: &ItemFacts) -> bool {
+    let Some(host) = catalog.get(hilt) else {
+        return false;
+    };
+    let Some((_, kind)) = part.upgrade else {
+        return false;
+    };
+    host.slot_kinds.contains(&kind)
+        && (kind == crate::inventory::CRYSTAL || part.upgrade_level <= host.upgrade_level)
+}
+
 /// Both hilts take `kind` in slot `slot`, so a refusal about what is fitted
 /// there cannot be a slot-kind disagreement.
 fn both_slots_take(
@@ -1498,6 +1523,8 @@ fn colour_refusal_checks() -> Checks {
         && part_a.upgrade_level == 0
         && part_b.upgrade == Some((0, 1))
         && part_b.upgrade_level == 3
+        && descriptions_of(&part_a, &part_b, "one_resref", false)
+        && hilt_could_take(&catalog, "slot_saber", &part_b)
         && hilt_level(&catalog, "slot_saber_red") == 1;
     world.set_script_state(state.clone());
     let before = state.clone();
@@ -1556,6 +1583,8 @@ fn colour_refusal_checks() -> Checks {
         && part_b.upgrade == Some((0, 1))
         && part_b.upgrade_level == 0
         && catalog.get("shared_part") == Some(&part_b)
+        && descriptions_of(&part_a, &part_b, "shared_part", false)
+        && hilt_could_take(&catalog, "slot_saber", &part_a)
         && hilt_level(&catalog, "slot_saber_red") == 1;
     world.set_script_state(state.clone());
     let before = state.clone();
@@ -1606,6 +1635,8 @@ fn colour_refusal_checks() -> Checks {
         && part_b.upgrade == Some((0, 1))
         && part_b.upgrade_level == 1
         && catalog.get("shared_part") == Some(&part_b)
+        && descriptions_of(&part_a, &part_b, "shared_part", false)
+        && hilt_could_take(&catalog, "slot_saber", &part_a)
         && hilt_level(&catalog, "slot_saber_red") == 1;
     world.set_script_state(state);
     let next = world.script_state().next_item;
@@ -1677,6 +1708,8 @@ fn colour_refusal_checks() -> Checks {
         && part_b.upgrade == Some((0, 1))
         && part_b.upgrade_level == 0
         && entered.get("shared_part") == Some(&part_b)
+        && descriptions_of(&part_a, &part_b, "shared_part", false)
+        && hilt_could_take(&left, "slot_saber", &part_a)
         && hilt == 1;
     let new = state
         .make_item(&entered, "new_crystal", PARTY, 1, None)
@@ -1728,6 +1761,10 @@ fn colour_refusal_checks() -> Checks {
     let before_out = out.clone();
     let result = state.fit(&third, &mut out, saber, new, None);
     let kept = state == before_second && out_same(&out, &before_out);
+    // This hop's own state goes back to a world, so the count of items in
+    // play is this probe's and not an earlier probe's.
+    world.set_script_state(state.clone());
+    let swapped = nothing_swapped(&world, "new_crystal", "old_crystal");
     let swap = swap_reaches_preserves(&third, &before_second, saber, new, "slot_saber_red");
     let named = fitted_names(&before_second, saber, 1, "shared_part");
     let slots = both_slots_take(&third, "slot_saber", "slot_saber_red", 1, 1);
@@ -1782,6 +1819,8 @@ fn colour_refusal_checks() -> Checks {
         && wanted_a.upgrade_level == 3
         && wanted_b.upgrade == Some((0, 1))
         && wanted_b.upgrade_level == 0
+        && descriptions_of(&wanted_a, &wanted_b, "shared_part", false)
+        && hilt_could_take(&first, "slot_saber", &wanted_a)
         && shared.template == "shared_part"
         && shared.upgrade == Some((0, 1))
         && shared.upgrade_level == 0
@@ -1854,6 +1893,8 @@ fn colour_refusal_checks() -> Checks {
         && wanted_c.upgrade_level == 0
         && wanted_c.template == crate::inventory::own_template("shared_part", "c")
         && entered.get("shared_part") == Some(&wanted_c)
+        && descriptions_of(&wanted_a, &wanted_b, "shared_part", false)
+        && hilt_could_take(&left, "slot_saber", &wanted_a)
         && hilt_level(&entered, "slot_saber_red") == 1;
     let new = state
         .make_item(&entered, "new_crystal", PARTY, 1, None)
@@ -1940,6 +1981,8 @@ fn colour_refusal_checks() -> Checks {
         && wanted_a.upgrade_level == 0
         && wanted_b.upgrade == Some((0, 1))
         && wanted_b.upgrade_level == 3
+        && descriptions_of(&wanted_a, &wanted_b, "shared_part", false)
+        && hilt_could_take(&left, "slot_saber", &wanted_a)
         && hilt_level(&entered, "slot_saber_red") == 1;
     let new = state
         .make_item(&entered, "new_crystal", PARTY, 1, None)
