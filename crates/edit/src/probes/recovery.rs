@@ -2,7 +2,7 @@
 //! without writing or changing it.
 
 use crate::recovery::{Colour, Facts, Holding, inspect, seat_holder};
-use sim::inventory::{COLOUR_SLOT, Catalog, Item, ItemFacts, PARTY, slots};
+use sim::inventory::{COLOUR_SLOT, Catalog, Item, ItemFacts, PARTY, facts_in_play, slots};
 use sim::module::ObjectKind;
 
 /// The accounting of a save that holds every holder kind the accounting tells
@@ -123,6 +123,14 @@ pub fn accounting() -> Result<String, String> {
     born_five.slots = 1 << slots::RIGHT_WEAPON;
     born_five.upgrade_level = 1;
     born_five.parts = vec!["medpac".into(), String::new()];
+    // A third birth shape, holding a part this module's catalog has never heard
+    // of: the save itself carries the facts of `ghost`, and the report reads a
+    // part in the host's template through the save as well as through the module.
+    let mut born_six = ItemFacts::plain("k1_born6");
+    born_six.slot_kinds = vec![COLOUR_SLOT];
+    born_six.slots = 1 << slots::RIGHT_WEAPON;
+    born_six.upgrade_level = 1;
+    born_six.parts = vec!["ghost".into()];
     // The colour slot's own kind at a level above the one its host takes, with no
     // colour route of its own: the slot route is the only way such a part could
     // be there, and `fit_inner` refuses it on the level, because only a crystal
@@ -203,6 +211,7 @@ pub fn accounting() -> Result<String, String> {
         born_three,
         born_four,
         born_five,
+        born_six,
         big_crystal,
         listed,
         crystal,
@@ -393,7 +402,7 @@ pub fn accounting() -> Result<String, String> {
     let row1 = sim::inventory::upgrade_bit(1).ok_or("no row 1")?;
     // template, holder, worn slot, stack, never-spent, KOTOR rows, fitted parts
     type Stock = (&'static str, u32, Option<u8>, u16, bool, u32, Vec<String>);
-    let goods: [Stock; 51] = [
+    let goods: [Stock; 53] = [
         // 0: the party carries two medpacs.
         ("medpac", PARTY, None, 2, false, 0, Vec::new()),
         // 1: the player wears a saber with a colour crystal fitted in it.
@@ -709,6 +718,22 @@ pub fn accounting() -> Result<String, String> {
             false,
             0,
             vec!["medpac".into(), String::new()],
+        ),
+        // 51: a colour slot holding a part this module's catalog does not have,
+        // at the index the host's own template names it at. The save carries the
+        // facts, so the part is described and the template explains it.
+        ("k1_born6", PARTY, None, 1, false, 0, vec!["ghost".into()]),
+        // 52: a colour slot holding a crystal whose facts recolour a named hilt
+        // that is not the sibling the other witnesses point at. The report has to
+        // name that hilt, not any hilt.
+        (
+            "saber",
+            PARTY,
+            None,
+            1,
+            false,
+            0,
+            vec!["crystal_three".into()],
         ),
     ];
     for (n, (template, holder, slot, stack, infinite, upgrades, fitted)) in
@@ -1359,6 +1384,33 @@ pub fn accounting() -> Result<String, String> {
             0,
             0,
         ),
+        // 51: a colour slot holding a part only the save describes, born at the
+        // index its host's template names it at: explained, and its facts came
+        // from the save rather than from the module.
+        row(
+            first + 51,
+            Holding::PartyLoose,
+            Facts::Catalog,
+            Colour::Unknown,
+            1,
+            0,
+            1,
+            0,
+            0,
+        ),
+        // 52: a colour slot holding a crystal that recolours a hilt other than
+        // its host: the colour reads as settled, the part is not explained.
+        row(
+            first + 52,
+            Holding::PartyLoose,
+            Facts::Catalog,
+            Colour::Fitted,
+            1,
+            0,
+            1,
+            1,
+            0,
+        ),
         // 38: a puppet that has not joined is one of the area's creatures.
         row(
             first + 38,
@@ -1450,6 +1502,10 @@ pub fn accounting() -> Result<String, String> {
             first + 49
         ),
         format!(
+            "item {} has the part crystal_three in colour slot 0, whose facts recolour saber_three, so the save does not say which hilt it was fitted in",
+            first + 52
+        ),
+        format!(
             "holder {player} has 2 items equipped in slot {}",
             slots::HANDS
         ),
@@ -1538,7 +1594,10 @@ pub fn accounting() -> Result<String, String> {
         .items
         .iter()
         .flat_map(|(id, held)| {
-            let Some(host) = catalog.get(&held.template) else {
+            // The host's facts come from the module catalog or from the facts the
+            // save carries, exactly as the report reads them: a host the module
+            // lacks is still a host, and so are its slots.
+            let Some(host) = facts_in_play(&catalog, &back.script.known, &held.template) else {
                 return Vec::new();
             };
             host.slot_kinds
@@ -1555,7 +1614,12 @@ pub fn accounting() -> Result<String, String> {
         })
         .collect();
     let tenant_explained = |part: &str, host: &str, at: usize| {
-        let (Some(part_facts), Some(host_facts)) = (catalog.get(part), catalog.get(host)) else {
+        // Both sides of the pair are read the way the report reads them, through
+        // the module catalog and through the facts the save carries.
+        let (Some(part_facts), Some(host_facts)) = (
+            facts_in_play(&catalog, &back.script.known, part),
+            facts_in_play(&catalog, &back.script.known, host),
+        ) else {
             return false;
         };
         let born_here = host_facts.parts.get(at).map(String::as_str) == Some(part);
@@ -1585,14 +1649,21 @@ pub fn accounting() -> Result<String, String> {
         .filter(|(_, part, host, at)| !tenant_explained(part, host, *at))
         .map(|(id, _, _, _)| *id)
         .collect();
-    // Fourteen of the save's items hold a part in a colour slot. Five of them are
+    // Sixteen of the save's items hold a part in a colour slot. Six of them are
     // parts a fit could have placed there, or a part the host's template starts
-    // the item holding. Nine are not: one is described nowhere, one recolours
+    // the item holding. Ten are not: one is described nowhere, one recolours
     // nothing at all and one is a colour kind one level above its host, two
-    // recolour hilts this module cannot use for colour, three recolour a sibling
+    // recolour hilts this module cannot use for colour, four recolour a sibling
     // hilt instead of their host, and one is an upgrade of another kind entirely.
     let tenants_as_expected = fitted_tenants
-        == vec![first + 1, first + 21, first + 28, first + 46, first + 50]
+        == vec![
+            first + 1,
+            first + 21,
+            first + 28,
+            first + 46,
+            first + 50,
+            first + 51,
+        ]
         && unfit_tenants
             == vec![
                 first + 22,
@@ -1604,6 +1675,7 @@ pub fn accounting() -> Result<String, String> {
                 first + 47,
                 first + 48,
                 first + 49,
+                first + 52,
             ];
     let tenant_count = colour_tenants.len();
     let read_only =
@@ -1627,16 +1699,16 @@ pub fn accounting() -> Result<String, String> {
         && round_trip
         && read_only
         && named
-        && tenant_count == 14
+        && tenant_count == 16
         && tenants_as_expected
         && wrong.is_empty()
         && flags
         && seat_ok
         && puppet_is_a_creature
         && puppets_kept
-        && report.units == 54
+        && report.units == 56
         && report.infinite == 1
-        && report.party_loose == 29
+        && report.party_loose == 31
         && report.carried == 2
         && report.equipped == 6
         && report.floor == 1
@@ -1646,13 +1718,13 @@ pub fn accounting() -> Result<String, String> {
         && report.area_objects == 1
         && report.unknown == 4
         && report.kotor_rows == 3
-        && report.tsl_slots == 26
-        && report.parts_unresolved == 14
+        && report.tsl_slots == 28
+        && report.parts_unresolved == 15
         && report.rows_unlisted == 1
-        && report.colours == 8
-        && report.colour_fitted == 7
+        && report.colours == 9
+        && report.colour_fitted == 8
         && report.colour_by_template == 1
-        && report.colour_unknown == 8
+        && report.colour_unknown == 9
         && report.facts_carried == 1
         && report.facts_absent == 1
         && report.unknown_holders == vec![far, gone, area];
@@ -1700,7 +1772,13 @@ pub fn accounting() -> Result<String, String> {
         report.items.len(),
         report.ambiguities.len()
     );
-    let summary_named_by_the_report = report_summary_matches(&summary, 51, 20);
+    // The sentence has to agree with the report's own counts, and those counts
+    // have to agree with the fixture: the numbers are not written down twice here,
+    // they are read from the report and from the table the rows were written from.
+    let summary_named_by_the_report =
+        report_summary_matches(&summary, report.items.len(), report.ambiguities.len())
+            && report.items.len() == truth.len()
+            && report.ambiguities.len() == wanted.len();
     if !totals || !blind_facts || !summary_named_by_the_report || !wrong.is_empty() {
         return Err(format!(
             "read {read}, round trip {round_trip}, read only {read_only}, all items named {named}, colour tenants as expected {tenants_as_expected}, colour tenants counted {tenant_count}, seat holder {seat_ok}, flags {flags}, blind {blind_facts}, summary {summary_named_by_the_report}, wrong {wrong:?}, items {}, units {}, infinite {}, party {}, carried {}, equipped {}, floor {}, containers {}, store {}, creatures {}, area objects {}, unknown {}, rows {}, slots {}, parts {}, rows unlisted {}, colours {} ({} fitted, {} by template, {} unknown), facts carried {}, facts absent {}, holders {:?}, ambiguities {:?}",
