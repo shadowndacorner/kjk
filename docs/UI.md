@@ -60,7 +60,9 @@ and the log says why. KOTOR 2 is read as installed, `override/` included
   (`skin::RENAMED`: the main menu, the party selection, the advanced
   graphics options). Screens are written for KOTOR 2's controls. A layout of the
   campaign's own world stays the campaign's, drawn with its art
-  (`skin::own`: the galaxy map, whose buttons are its planets). A layout drawn under
+  (`skin::own`). The galaxy map is one, because its buttons are its
+  planets. The loading screen is the other, because KOTOR 1's pictures have
+  a slot for its bar. A layout drawn under
   a screen's (the bar) is read from where the screen's came from.
 - A layout from an override folder (the game's own or a Workshop item's)
   is a mod's, unless it is one of the files Aspyr's update ships there
@@ -103,8 +105,9 @@ and the log says why. KOTOR 2 is read as installed, `override/` included
 - The inventory's and the store's filters sort items by kind
   (`vm::ItemKind`, from the template). An item row shows its icon in a
   square beside its name, as in KOTOR 2.
-- The main menu and loading screen show KOTOR 1's logos (the main menu
-  KOTOR 2's own in a KOTOR 2 campaign).
+- The main menu shows KOTOR 1's logo (KOTOR 2's own in a KOTOR 2
+  campaign). The loading screen is the campaign's own layout, so it shows
+  the campaign's own logo.
 - The main menu is in the game played last (`game::menu_figure`): the
   newer of the newest save (one's own or a copy of a host's) and the note
   every machine keeps beside the saves of the module it last played and
@@ -342,7 +345,10 @@ party carries and wears that takes upgrades (weapons by kind, body armour:
 each kind it takes, two for its power crystals; the item's icon shows in
 each). The bench works on a copy, as TSL's: a slot chosen lists an empty
 row (taking out what is in it; not for a colour crystal, which stays
-until another takes its place), what is in it, then what the party
+until another takes its place), what is in it, the part it held when the
+bench opened if the visit took that part out (KOTOR 2's executable puts a
+part taken out back in the party's inventory at once, so the list offers
+it again), then what the party
 carries that fits it and no other slot of the visit takes (`LB_ITEMS`,
 from its top; one of an upgrade level above the item's greyed, refused
 with the game's message box 116713); a row chosen changes the copy and
