@@ -5034,10 +5034,13 @@ fn save_edits() {
     probed("save editor", &save_editor::probes::all(), 0);
 }
 
-/// A save's holdings counted once without writing or changing the save.
-/// Party-loose, carried, equipped, other and unknown holders are separate;
-/// KOTOR rows, TSL slots and a colour crystal are counted once. Approved by
-/// the consolidated owner pass on 2026-11-24 as
+/// What a save holds, counted once, without writing or changing the save.
+/// Every item is reported once, under one holder kind (the party, a
+/// character carrying or wearing it, the area's floor, one of the area's
+/// containers, a store's stock, an area creature, or nothing the save
+/// names) and under where its template's facts came from (the module's
+/// catalog, the facts the save carries, neither, or not checked at all).
+/// Approved by the consolidated owner pass on 2026-11-24 as
 /// `recovery_inventory_accounting`.
 #[cfg(feature = "editor")]
 #[test]

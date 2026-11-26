@@ -25,7 +25,7 @@ pub use edits::Editor;
 pub use open::{Opened, Refusal, open, open_bytes};
 pub use party::{PartyChange, party_after, pending_party};
 pub use recovery::{
-    Holding, ItemOwnership, OwnershipReport, first_seat_holder, inspect, item, seat_holder,
+    Facts, Holding, ItemOwnership, OwnershipReport, held_item, inspect, seat_holder,
 };
 pub use warnings::{feat_warning, power_warning};
 
