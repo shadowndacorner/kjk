@@ -1303,17 +1303,31 @@ fn colour_refusal_checks() -> Checks {
     // Same shape, and the two descriptions ask the same kind and level, so
     // the swap goes ahead.
     let catalog = shadowed_known_catalog(1, 1);
+    let part_a = part(
+        &crate::inventory::own_template("shared_part", "a"),
+        1,
+        1,
+        Vec::new(),
+    );
+    let part_b = own_part(&catalog, "shared_part", "b");
     let mut world = colour_world(catalog.clone());
     let saber = give_with(&mut world, &catalog, "slot_saber", PARTY, None);
     let new = give_with(&mut world, &catalog, "new_crystal", PARTY, None);
     let mut state = world.script_state().clone();
-    let from = crate::inventory::own_template("shared_part", "a");
-    state
-        .known
-        .insert(from.clone(), part(&from, 1, 1, Vec::new()));
+    state.known.insert(part_a.template.clone(), part_a.clone());
     let mut held = state.items.get_mut(&saber).expect("slot_saber");
     held.fitted = vec![String::new(), "shared_part".into()];
     drop(held);
+    let holds_a = state.known.get(&part_a.template) == Some(&part_a);
+    // Both descriptions are really there and really ask the same kind at the
+    // same level: the carried one from module a, and the module's own part b
+    // for the bare resref the save slot holds.
+    let shape = part_a.upgrade == Some((0, 1))
+        && part_a.upgrade_level == 1
+        && part_b.upgrade == Some((0, 1))
+        && part_b.upgrade_level == 1
+        && catalog.get("shared_part") == Some(&part_b)
+        && hilt_level(&catalog, "slot_saber_red") == 1;
     world.set_script_state(state);
     let next = world.script_state().next_item;
     let before = world.script_state().clone();
@@ -1339,7 +1353,9 @@ fn colour_refusal_checks() -> Checks {
         ),
     ];
     let goods = party_goods(&world);
-    let exact = goods == expected
+    let exact = holds_a
+        && shape
+        && goods == expected
         && world.script_state().next_item == next + 1
         && out_same(&out, &before_out)
         && count(&world, "new_crystal") == 0
@@ -1350,7 +1366,9 @@ fn colour_refusal_checks() -> Checks {
         "a colour swap goes ahead when the catalog and the carried facts describe the same part",
         check(
             result.is_ok() && exact,
-            format!("result {result:?}, goods {goods:?}"),
+            format!(
+                "holds a {holds_a}, descriptions agree {shape}, result {result:?}, goods {goods:?}",
+            ),
         ),
     ));
 
