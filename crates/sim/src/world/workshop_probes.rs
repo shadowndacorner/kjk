@@ -148,10 +148,22 @@ fn item(template: &str, cost: u32, base_item: u16, plot: bool) -> ItemFacts {
     }
 }
 
-/// An upgrade of kind `kind` (`upgradetypes.2da` row) and level `level`.
+/// An upgrade of kind `kind` (`upgradetypes.2da` row) and level `level`, at
+/// `upgrade.2da` row 0.
 fn part(template: &str, kind: u8, level: u8, properties: Vec<Property>) -> ItemFacts {
+    upgrade_part(template, 0, kind, level, properties)
+}
+
+/// An upgrade at `upgrade.2da` row `row`, of kind `kind` and level `level`.
+fn upgrade_part(
+    template: &str,
+    row: u16,
+    kind: u8,
+    level: u8,
+    properties: Vec<Property>,
+) -> ItemFacts {
     ItemFacts {
-        upgrade: Some((0, kind)),
+        upgrade: Some((row, kind)),
         upgrade_level: level,
         properties,
         ..item(template, 100, PLAIN, false)
@@ -295,6 +307,7 @@ fn colour_catalog() -> Catalog {
         old,
         new,
         part("crystal", 0, 0, Vec::new()),
+        upgrade_part("bench_crystal", 1, 0, 0, Vec::new()),
     ])
 }
 
@@ -372,24 +385,66 @@ fn incompatible_colour_catalog() -> Catalog {
     Catalog::new([old_saber, new_saber, old, new])
 }
 
+/// A hilt with an ordinary crystal slot and an ordinary upgrade slot, whose
+/// new colour's hilt lacks that upgrade slot's kind. What sits in the slot is
+/// a part the session reader really fits there, not a colour part.
 fn incompatible_slot_catalog() -> Catalog {
-    let old_saber = host("slot_saber", vec![COLOUR_SLOT, 0], slots::RIGHT_WEAPON);
-    let new_saber = host("slot_saber_red", vec![0, 0], slots::RIGHT_WEAPON);
+    let old_saber = host("slot_saber", vec![0, 1], slots::RIGHT_WEAPON);
+    let new_saber = host("slot_saber_red", vec![0, 2], slots::RIGHT_WEAPON);
     let old = ItemFacts {
         recolours: vec!["slot_saber".into()],
-        ..part("old_crystal", COLOUR_SLOT, 0, Vec::new())
+        ..part("old_crystal", 0, 0, Vec::new())
     };
     let new = ItemFacts {
         recolours: vec!["slot_saber_red".into()],
-        ..part("new_crystal", COLOUR_SLOT, 0, Vec::new())
+        ..part("new_crystal", 0, 0, Vec::new())
     };
     Catalog::new([
         old_saber,
         new_saber,
         old,
         new,
-        part("slot_crystal", COLOUR_SLOT, 0, Vec::new()),
+        part("slot_upgrade", 1, 0, Vec::new()),
     ])
+}
+
+/// A hilt whose crystal slot holds a crystal of a level above the hilt's
+/// own: TSL's bench lists a crystal of any level, so a colour swap keeps it.
+fn colour_level_catalog() -> Catalog {
+    let old_saber = host("slot_saber", vec![0, 1], slots::RIGHT_WEAPON);
+    let new_saber = host("slot_saber_red", vec![0, 1], slots::RIGHT_WEAPON);
+    let old = ItemFacts {
+        recolours: vec!["slot_saber".into()],
+        ..part("old_crystal", 0, 0, Vec::new())
+    };
+    let new = ItemFacts {
+        recolours: vec!["slot_saber_red".into()],
+        ..part("new_crystal", 0, 0, Vec::new())
+    };
+    Catalog::new([
+        old_saber,
+        new_saber,
+        old,
+        new,
+        part("hi_crystal", 0, 3, Vec::new()),
+        part("slot_upgrade", 1, 0, Vec::new()),
+    ])
+}
+
+/// A hilt whose fitted part came from an earlier module: this module's
+/// catalog has no template for it, only `State::known` does.
+fn colour_known_catalog() -> Catalog {
+    let old_saber = host("slot_saber", vec![0, 1], slots::RIGHT_WEAPON);
+    let new_saber = host("slot_saber_red", vec![0, 1], slots::RIGHT_WEAPON);
+    let old = ItemFacts {
+        recolours: vec!["slot_saber".into()],
+        ..part("old_crystal", 0, 0, Vec::new())
+    };
+    let new = ItemFacts {
+        recolours: vec!["slot_saber_red".into()],
+        ..part("new_crystal", 0, 0, Vec::new())
+    };
+    Catalog::new([old_saber, new_saber, old, new])
 }
 
 fn slot_catalog() -> Catalog {
@@ -433,8 +488,58 @@ fn stack_of(world: &SimWorld, template: &str) -> u16 {
         .sum()
 }
 
+/// Every field `Out` has, named. `out_same` compares each one; a new field
+/// makes this fail to compile until `out_same` compares it too.
+fn audit_out_fields(out: &Out) {
+    let Out {
+        changes: _,
+        notices: _,
+        goals: _,
+        intents: _,
+        area_sound: _,
+        fade: _,
+        world_fade_in: _,
+        video_effect: _,
+        new_module: _,
+        worn_before: _,
+        made: _,
+        deleted: _,
+        destroyed: _,
+        minigame: _,
+        lost: _,
+        statuses: _,
+        feedback: _,
+        assigned: _,
+    } = out;
+}
+
+/// What the party carries: for each item its id, template, holder, slot,
+/// stack, K1 upgrade bits and TSL fitted parts, in id order.
+type Bench = Vec<(u32, String, u32, Option<u8>, u16, u32, Vec<String>)>;
+
+/// Every item the party carries. What a workbench transaction leaves,
+/// stated exactly.
+fn party_goods(world: &SimWorld) -> Bench {
+    world
+        .script_state()
+        .items
+        .held_by(PARTY)
+        .map(|(id, held)| {
+            (
+                id,
+                held.template.clone(),
+                held.holder,
+                held.slot,
+                held.stack,
+                held.upgrades,
+                held.fitted.clone(),
+            )
+        })
+        .collect()
+}
+
 /// An upgrade taken out returns exactly one unit and the item keeps the
-/// rest of its holdings.
+/// rest of its holdings. `audit_out_fields` covers every field `Out` has.
 fn out_same(a: &Out, b: &Out) -> bool {
     a.changes == b.changes
         && a.notices == b.notices
@@ -455,8 +560,62 @@ fn out_same(a: &Out, b: &Out) -> bool {
         && a.feedback == b.feedback
         && a.assigned == b.assigned
 }
+/// An output with a value in every field a workbench step can leave alone
+/// except the minigame course, which no workbench path touches. A refusal
+/// has to leave all of it as it was, so the probes compare against this
+/// rather than an empty output.
 fn seeded_out() -> Out {
     let mut out = Out::default();
+    audit_out_fields(&out);
+    out.intents.insert(
+        1,
+        crate::script::actions::Intent {
+            target: ObjectId(2),
+            passive: false,
+            talent: None,
+        },
+    );
+    out.area_sound = Some(crate::snapshot::AreaSound {
+        music: crate::snapshot::Track {
+            state: 1,
+            day: Some(3),
+            night: None,
+            volume: 40,
+        },
+        battle: crate::snapshot::Track::default(),
+        ambient: crate::snapshot::Track {
+            state: 2,
+            day: None,
+            night: Some(5),
+            volume: 60,
+        },
+        rooms: Vec::new(),
+    });
+    out.fade = Some(crate::snapshot::Fade {
+        start_ms: 1_000,
+        wait_ms: 100,
+        length_ms: 500,
+        colour: [0.0, 0.0, 0.0],
+        out: true,
+        from: 0.25,
+        locked: true,
+        conversation: false,
+    });
+    out.world_fade_in = Some(crate::snapshot::WorldFadeIn::AtDialog);
+    out.made.push(crate::script::Made {
+        id: ObjectId(7),
+        facts: Arc::new(crate::module::ObjectData::creature(
+            "probe_made",
+            "probe_made",
+            [0.0; 3],
+            Sheet::dev_soldier(),
+        )),
+        at: [1.0, 2.0, 3.0],
+        yaw: 90.0,
+        kept: None,
+        reach: crate::install::JUMP,
+    });
+    out.statuses.push(crate::snapshot::StatusKind::Xp(10));
     out.changes.push(crate::script::Change::UseItem {
         who: ObjectId(0),
         row: 0,
@@ -588,34 +747,87 @@ fn return_atomic_checks() -> Checks {
     held.upgrades = crate::inventory::upgrade_bit(1).expect("row 1");
     drop(held);
     world.set_script_state(state.clone());
-    let mut out = Out::default();
+    let next = world.script_state().next_item;
+    let row1 = crate::inventory::upgrade_bit(1).expect("row 1");
+    let mut out = seeded_out();
+    let before_out = out.clone();
+    let mut state = world.script_state().clone();
     let result = state.unfit(&catalog, &mut out, saber, 1);
     world.set_script_state(state);
-    let units = world
-        .script_state()
-        .items
-        .values()
-        .filter(|held| held.template == "saber")
-        .map(|held| held.stack)
-        .sum::<u16>();
-    let upgraded = world
-        .script_state()
-        .items
-        .values()
-        .filter(|held| held.template == "saber" && held.upgrades != 0)
-        .count();
-    let plain = world
-        .script_state()
-        .items
-        .values()
-        .filter(|held| held.template == "saber" && held.upgrades == 0)
-        .count();
-    let returned = stack_of(&world, "crystal") == 1;
+    // The unit that stays wears its crystal; the one split off loses it, and
+    // the crystal comes back to the party as an item of its own. Two new
+    // items and no output change.
+    let expected = vec![
+        (saber, "saber".to_string(), PARTY, None, 1, row1, Vec::new()),
+        (
+            crate::inventory::FIRST_ITEM + next,
+            "saber".to_string(),
+            PARTY,
+            None,
+            1,
+            0,
+            Vec::new(),
+        ),
+        (
+            crate::inventory::FIRST_ITEM + next + 1,
+            "crystal".to_string(),
+            PARTY,
+            None,
+            1,
+            0,
+            Vec::new(),
+        ),
+    ];
+    let goods = party_goods(&world);
+    let exact = goods == expected
+        && world.script_state().next_item == next + 2
+        && out_same(&out, &before_out);
     checks.push((
-        "a stacked K1 host is split before a direct removal",
+        "a stacked K1 host is split before a direct removal, leaving an exact bench",
         check(
-            result.is_ok() && units == 2 && upgraded == 1 && plain == 1 && returned,
-            format!("result {result:?}, units {units}, upgraded {upgraded}, plain {plain}, returned {returned}"),
+            result.is_ok() && exact,
+            format!("result {result:?}, goods {goods:?}"),
+        ),
+    ));
+
+    let catalog = colour_catalog();
+    let mut world = colour_world(catalog.clone());
+    let saber = give_with(&mut world, &catalog, "saber", PARTY, None);
+    let crystal = give_with(&mut world, &catalog, "bench_crystal", PARTY, None);
+    let mut state = world.script_state().clone();
+    let mut held = state.items.get_mut(&saber).expect("saber");
+    held.stack = 2;
+    drop(held);
+    world.set_script_state(state.clone());
+    let next = world.script_state().next_item;
+    let mut out = seeded_out();
+    let before_out = out.clone();
+    let mut state = world.script_state().clone();
+    let result = state.fit(&catalog, &mut out, saber, crystal, None);
+    world.set_script_state(state);
+    // One unit of the stack gains the crystal and is added back beside the
+    // plain one; the crystal the party carried is gone. One new item.
+    let expected = vec![
+        (saber, "saber".to_string(), PARTY, None, 1, 0, Vec::new()),
+        (
+            crate::inventory::FIRST_ITEM + next,
+            "saber".to_string(),
+            PARTY,
+            None,
+            1,
+            row1,
+            Vec::new(),
+        ),
+    ];
+    let goods = party_goods(&world);
+    let exact = goods == expected
+        && world.script_state().next_item == next + 1
+        && out_same(&out, &before_out);
+    checks.push((
+        "a stacked K1 host is split before a direct fitting, leaving an exact bench",
+        check(
+            result.is_ok() && exact,
+            format!("result {result:?}, goods {goods:?}"),
         ),
     ));
     checks
@@ -630,9 +842,10 @@ fn colour_refusal_checks() -> Checks {
     let new = give_with(&mut world, &catalog, "new_crystal", PARTY, None);
     let before = world.script_state().clone();
     let mut state = world.script_state().clone();
-    let mut out = Out::default();
+    let mut out = seeded_out();
+    let before_out = out.clone();
     let result = state.fit(&catalog, &mut out, saber, new, None);
-    let kept = state == before && out_same(&out, &Out::default());
+    let kept = state == before && out_same(&out, &before_out);
     world.set_script_state(state);
     checks.push((
         "a missing old colour mapping refuses without changing the save state or output",
@@ -648,9 +861,10 @@ fn colour_refusal_checks() -> Checks {
     let new = give_with(&mut world, &catalog, "new_crystal", PARTY, None);
     let before = world.script_state().clone();
     let mut state = world.script_state().clone();
-    let mut out = Out::default();
+    let mut out = seeded_out();
+    let before_out = out.clone();
     let result = state.fit(&catalog, &mut out, saber, new, None);
-    let kept = state == before && out_same(&out, &Out::default());
+    let kept = state == before && out_same(&out, &before_out);
     world.set_script_state(state);
     checks.push((
         "two old colour mappings for the same saber refuse instead of choosing one",
@@ -670,9 +884,10 @@ fn colour_refusal_checks() -> Checks {
     drop(held);
     world.set_script_state(state.clone());
     let before = state.clone();
-    let mut out = Out::default();
+    let mut out = seeded_out();
+    let before_out = out.clone();
     let result = state.fit(&catalog, &mut out, saber, new, None);
-    let kept = state == before && out_same(&out, &Out::default());
+    let kept = state == before && out_same(&out, &before_out);
     world.set_script_state(state);
     checks.push((
         "a colour swap that cannot keep an installed power crystal refuses",
@@ -692,9 +907,10 @@ fn colour_refusal_checks() -> Checks {
     drop(held);
     world.set_script_state(state.clone());
     let before = state.clone();
-    let mut out = Out::default();
+    let mut out = seeded_out();
+    let before_out = out.clone();
     let result = state.fit(&catalog, &mut out, saber, new, None);
-    let kept = state == before && out_same(&out, &Out::default());
+    let kept = state == before && out_same(&out, &before_out);
     world.set_script_state(state);
     checks.push((
         "a colour swap with a different K1 row template refuses",
@@ -710,19 +926,118 @@ fn colour_refusal_checks() -> Checks {
     let new = give_with(&mut world, &catalog, "new_crystal", PARTY, None);
     let mut state = world.script_state().clone();
     let mut held = state.items.get_mut(&saber).expect("slot_saber");
-    held.fitted = vec!["slot_crystal".into(), String::new()];
+    held.fitted = vec![String::new(), "slot_upgrade".into()];
     drop(held);
     world.set_script_state(state.clone());
     let before = state.clone();
-    let mut out = Out::default();
+    let mut out = seeded_out();
+    let before_out = out.clone();
     let result = state.fit(&catalog, &mut out, saber, new, None);
-    let kept = state == before && out_same(&out, &Out::default());
+    let kept = state == before && out_same(&out, &before_out);
     world.set_script_state(state);
     checks.push((
         "a colour swap with a different TSL slot kind refuses",
         check(
             result.is_err() && kept,
             format!("result {result:?}, kept {kept}"),
+        ),
+    ));
+
+    let catalog = colour_level_catalog();
+    let mut world = colour_world(catalog.clone());
+    let saber = give_with(&mut world, &catalog, "slot_saber", PARTY, None);
+    let new = give_with(&mut world, &catalog, "new_crystal", PARTY, None);
+    let mut state = world.script_state().clone();
+    let mut held = state.items.get_mut(&saber).expect("slot_saber");
+    held.fitted = vec!["hi_crystal".into(), String::new()];
+    drop(held);
+    world.set_script_state(state);
+    let next = world.script_state().next_item;
+    let mut out = seeded_out();
+    let before_out = out.clone();
+    let mut state = world.script_state().clone();
+    let result = state.fit(&catalog, &mut out, saber, new, None);
+    world.set_script_state(state);
+    let expected = vec![
+        (
+            saber,
+            "slot_saber_red".to_string(),
+            PARTY,
+            None,
+            1,
+            0,
+            vec!["hi_crystal".to_string(), String::new()],
+        ),
+        (
+            crate::inventory::FIRST_ITEM + next,
+            "old_crystal".to_string(),
+            PARTY,
+            None,
+            1,
+            0,
+            Vec::new(),
+        ),
+    ];
+    let goods = party_goods(&world);
+    let exact = goods == expected
+        && world.script_state().next_item == next + 1
+        && out_same(&out, &before_out);
+    checks.push((
+        "a colour swap keeps a crystal of a level above the hilt's own",
+        check(
+            result.is_ok() && exact,
+            format!("result {result:?}, goods {goods:?}"),
+        ),
+    ));
+
+    let catalog = colour_known_catalog();
+    let mut world = colour_world(catalog.clone());
+    let saber = give_with(&mut world, &catalog, "slot_saber", PARTY, None);
+    let new = give_with(&mut world, &catalog, "new_crystal", PARTY, None);
+    let mut state = world.script_state().clone();
+    state.known.insert(
+        "off_catalog".to_string(),
+        part("off_catalog", 1, 0, Vec::new()),
+    );
+    let mut held = state.items.get_mut(&saber).expect("slot_saber");
+    held.fitted = vec![String::new(), "off_catalog".into()];
+    drop(held);
+    world.set_script_state(state);
+    let next = world.script_state().next_item;
+    let mut out = seeded_out();
+    let before_out = out.clone();
+    let mut state = world.script_state().clone();
+    let result = state.fit(&catalog, &mut out, saber, new, None);
+    world.set_script_state(state);
+    let expected = vec![
+        (
+            saber,
+            "slot_saber_red".to_string(),
+            PARTY,
+            None,
+            1,
+            0,
+            vec![String::new(), "off_catalog".to_string()],
+        ),
+        (
+            crate::inventory::FIRST_ITEM + next,
+            "old_crystal".to_string(),
+            PARTY,
+            None,
+            1,
+            0,
+            Vec::new(),
+        ),
+    ];
+    let goods = party_goods(&world);
+    let exact = goods == expected
+        && world.script_state().next_item == next + 1
+        && out_same(&out, &before_out);
+    checks.push((
+        "a colour swap keeps a part only State::known describes",
+        check(
+            result.is_ok() && exact,
+            format!("result {result:?}, goods {goods:?}"),
         ),
     ));
     checks
@@ -800,6 +1115,30 @@ fn output_rollback_checks() -> Checks {
     world.set_script_state(state);
     checks.push((
         "a partial Assemble restores every item and every earlier output field",
+        check(
+            result.is_err() && kept,
+            format!("result {result:?}, kept {kept}"),
+        ),
+    ));
+
+    let catalog = colour_catalog();
+    let mut world = colour_world(catalog.clone());
+    let saber = give_with(&mut world, &catalog, "saber", PARTY, None);
+    let new = give_with(&mut world, &catalog, "new_crystal", PARTY, None);
+    let mut state = world.script_state().clone();
+    let mut held = state.items.get_mut(&saber).expect("saber");
+    held.stack = 2;
+    held.upgrades = crate::inventory::upgrade_bit(1).expect("row 1");
+    drop(held);
+    world.set_script_state(state.clone());
+    let before = state.clone();
+    let mut out = seeded_out();
+    let before_out = out.clone();
+    let result = state.fit(&catalog, &mut out, saber, new, None);
+    let kept = state == before && out_same(&out, &before_out);
+    world.set_script_state(state);
+    checks.push((
+        "a refused colour swap on a stacked host rolls the split back as well",
         check(
             result.is_err() && kept,
             format!("result {result:?}, kept {kept}"),

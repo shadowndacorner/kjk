@@ -17,8 +17,8 @@ use crate::combat::passive;
 use crate::combat::sheet::{Sheet, Weapon};
 use crate::inventory::properties::Wearer;
 use crate::inventory::{
-    COLOUR_SLOT, CREDITS, CRYSTAL, Catalog, Cost, FIRST_ITEM, Held, Item, ItemFacts, PARTY,
-    has_upgrade, pairs, properties, rewear, slots, upgrade_bit,
+    CREDITS, CRYSTAL, Catalog, Cost, FIRST_ITEM, Held, Item, ItemFacts, PARTY, has_upgrade, pairs,
+    properties, rewear, slots, upgrade_bit,
 };
 use crate::notice::Notice;
 
@@ -690,8 +690,12 @@ impl State {
     }
 
     /// Whether target facts and new facts keep each installed K1 row and TSL
-    /// slot with the same part identity and slot kind.
+    /// slot with the same part identity and slot kind. A part's facts come
+    /// from the module's catalog or from `known`: a part fitted in an earlier
+    /// module travels to the next one (`carry_known`), whose catalog may lack
+    /// its template.
     fn preserves(
+        &self,
         target: &Item,
         facts: &ItemFacts,
         new_facts: &ItemFacts,
@@ -722,7 +726,7 @@ impl State {
             let Some(new_kind) = new_facts.slot_kinds.get(slot) else {
                 return false;
             };
-            let Some(part_facts) = catalog.get(part) else {
+            let Some(part_facts) = self.item_facts(catalog, part) else {
                 return false;
             };
             let Some((_, part_kind)) = part_facts.upgrade else {
@@ -731,7 +735,10 @@ impl State {
             if part_kind != *old_kind || part_kind != *new_kind {
                 return false;
             }
-            if part_kind != COLOUR_SLOT && part_facts.upgrade_level > new_facts.upgrade_level {
+            // As `fit_inner`'s rule: an upgrade above the host's level
+            // refuses, a crystal of any level fits (`CRYSTAL`, as TSL's
+            // bench lists them).
+            if part_kind != CRYSTAL && part_facts.upgrade_level > new_facts.upgrade_level {
                 return false;
             }
         }
@@ -806,7 +813,7 @@ impl State {
             }
             let had = old[0].template.clone();
             let new_facts = catalog.get(&colour).ok_or(refused.clone())?;
-            if !Self::preserves(target, &facts, new_facts, catalog) {
+            if !self.preserves(target, &facts, new_facts, catalog) {
                 return Err(refused);
             }
             self.refit(out, item, |held| held.template = colour);

@@ -1,3 +1,4 @@
 # The sim's hash moves on purpose: the upgrade bench keeps a refused change
-# out of the items, the allocator and the step's output.
-sim = "the upgrade bench stages item, allocator and output changes and restores them together when a change is refused"
+# out of the items, the allocator and the step's output, and a colour swap
+# now keeps parts the bench used to turn away.
+sim = "the upgrade bench stages item, allocator and output changes and restores them together when a change is refused, and a colour swap keeps a crystal of any level and a part carried in from an earlier module"
