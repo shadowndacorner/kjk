@@ -1433,11 +1433,12 @@ fn colour_refusal_checks() -> Checks {
             kept_facts
                 && holds_b
                 && has_crystal
+                && shape
                 && shape_c
                 && result == Err(Notice::CannotUpgrade)
                 && kept,
             format!(
-                "kept_facts {kept_facts}, holds b {holds_b}, crystal {has_crystal}, c asks {:?} at {}, result {result:?}, kept {kept}",
+                "kept_facts {kept_facts}, holds b {holds_b}, crystal {has_crystal}, premises a/b/hilt {shape}, c asks {:?} at {}, result {result:?}, kept {kept}",
                 part_c.upgrade,
                 part_c.upgrade_level
             ),
