@@ -4388,7 +4388,7 @@ fn real_mods() {
 /// Assemble. The sim alone (proposed 2026-11-17, awaiting approval).
 #[test]
 fn workbench() {
-    probed("workbench", &sim::workshop_probes::probes(), 16);
+    probed("workbench", &sim::workshop_probes::probes(), 17);
 }
 
 /// An upgrade taken out returns exactly one equivalent unit, and a refused
@@ -4412,7 +4412,7 @@ fn workshop_colour_mapping_refused() {
     probed(
         "workshop colour mapping refused",
         &sim::workshop_probes::colour_refusal_probes(),
-        15,
+        19,
     );
 }
 

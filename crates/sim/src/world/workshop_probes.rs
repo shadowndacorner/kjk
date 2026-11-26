@@ -553,12 +553,12 @@ fn plain_shared_module(level: u8) -> Catalog {
 }
 
 /// The hilt, its colour crystals and the module's own template of the fitted
-/// part's resref, as a module whose own part of that resref is an upgrade of
-/// kind `part_kind` sees them. Both hilts take a colour slot and a slot of
-/// `part_kind`'s kind at level 1, so the two modules can disagree about nothing
-/// but the kind the part is.
-fn kind_module(which: &str, part_kind: u8) -> Catalog {
-    let kinds = vec![0, 2];
+/// part's resref, as a module whose hilt takes `hilt_kind` in slot 1 and whose
+/// own part of that resref is an upgrade of kind `part_kind` sees them. Both
+/// hilts take the same kinds, so two modules can disagree about nothing but the
+/// kind the part is.
+fn kind_module(which: &str, hilt_kind: u8, part_kind: u8) -> Catalog {
+    let kinds = vec![0, hilt_kind];
     let old_saber = host("slot_saber", kinds.clone(), slots::RIGHT_WEAPON);
     let new_saber = host("slot_saber_red", kinds, slots::RIGHT_WEAPON);
     let old = ItemFacts {
@@ -2247,8 +2247,8 @@ fn colour_refusal_checks() -> Checks {
     // and the swap refuses. Were the last description read to win instead, the
     // kind 1 the entered module answers with is one the new hilt takes, and the
     // swap would go ahead.
-    let left = kind_module("a", 2);
-    let entered = kind_module("b", 1);
+    let left = kind_module("a", 2, 2);
+    let entered = kind_module("b", 2, 1);
     let mut world = colour_world(left.clone());
     let saber = give_with(&mut world, &left, "slot_saber", PARTY, None);
     let mut state = world.script_state().clone();
@@ -2304,6 +2304,77 @@ fn colour_refusal_checks() -> Checks {
                 && swapped,
             format!(
                 "fit {fitted:?}, the slot holds module a's own template {written}, holds a {holds_a}, a says kind 2 and b says kind 1 {shape}, swap {swap}, the slot names the part {named}, both hilts take kind 2 there {slots}, result {result:?}, kept {kept}, nothing swapped {swapped}"
+            ),
+        ),
+    ));
+
+    // The same disagreement read the other way round, so that the refusal cannot
+    // come from the hilt the swap is made against. The part was fitted in module
+    // a, whose hilt takes a kind 2 upgrade in slot 1 and whose own file of the
+    // resref is one. The world then reaches module c, whose hilt takes a kind 1
+    // upgrade in that slot and whose own file of the same resref is a kind 1
+    // upgrade, while the facts carried from module a still say kind 2. Both of
+    // this hop's hilts take kind 1, so a reading that kept the catalog's kind and
+    // ignored the carried one would certify the swap; the accepted rule says the
+    // two descriptions disagree, and it refuses.
+    let left = kind_module("a", 2, 2);
+    let middle = kind_module("b", 2, 1);
+    let entered = kind_module("c", 1, 1);
+    let mut world = colour_world(left.clone());
+    let saber = give_with(&mut world, &left, "slot_saber", PARTY, None);
+    let mut state = world.script_state().clone();
+    let given = state
+        .make_item(&left, "shared_part", PARTY, 1, None)
+        .expect("the part to fit")
+        .0;
+    let mut fitting = seeded_out();
+    let fitted = state.fit(&left, &mut fitting, saber, given, Some(1));
+    let written = state
+        .items
+        .get(&saber)
+        .is_some_and(|held| held.fitted.get(1).map(String::as_str) == Some("shared_part@a"));
+    let part_a = own_part(&left, "shared_part", "a");
+    let part_c = own_part(&entered, "shared_part", "c");
+    state.carry_known(&left, &middle);
+    state.carry_known(&middle, &entered);
+    let holds_a = state.known.get(&part_a.template) == Some(&part_a);
+    let shape = fitted.is_ok()
+        && written
+        && part_a.upgrade == Some((0, 2))
+        && part_a.upgrade_level == 1
+        && part_c.upgrade == Some((0, 1))
+        && part_c.upgrade_level == 1
+        && entered.get("shared_part") == Some(&part_c)
+        && descriptions_of(&part_a, &part_c, "shared_part", false)
+        && hilt_could_take(&left, "slot_saber", 1, &part_a)
+        && both_slots_take(&entered, "slot_saber", "slot_saber_red", 1, 1)
+        && hilt_level(&entered, "slot_saber_red") == 1;
+    let new = state
+        .make_item(&entered, "new_crystal", PARTY, 1, None)
+        .expect("the crystal for the swap")
+        .0;
+    world.set_script_state(state.clone());
+    let before = state.clone();
+    let mut out = seeded_out();
+    let before_out = out.clone();
+    let result = state.fit(&entered, &mut out, saber, new, None);
+    let kept = state == before && out_same(&out, &before_out);
+    world.set_script_state(state);
+    let swapped = nothing_swapped(&world, "new_crystal", "old_crystal");
+    let swap = swap_reaches_preserves(&entered, &before, saber, new, "slot_saber_red");
+    let named = fitted_names(&before, saber, 1, &fit_writes("shared_part", "a"));
+    checks.push((
+        "a colour swap refuses when the carried facts and the module entered disagree about a fitted part's kind, whatever the new hilt takes",
+        check(
+            shape
+                && holds_a
+                && swap
+                && named
+                && result == Err(Notice::CannotUpgrade)
+                && kept
+                && swapped,
+            format!(
+                "fit {fitted:?}, the slot holds module a's own template {written}, the carried kind 2 facts are still held {holds_a}, c's own part is kind 1 and both of this hop's hilts take kind 1 {shape}, swap {swap}, the slot names the part {named}, result {result:?}, kept {kept}, nothing swapped {swapped}"
             ),
         ),
     ));
