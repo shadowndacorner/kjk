@@ -1329,7 +1329,7 @@ fn colour_refusal_checks() -> Checks {
     checks.push((
         "a part fitted in the module left keeps its facts across the change, and the swap refuses",
         check(
-            facts_travel && result.is_err() && kept,
+            facts_travel && result == Err(Notice::CannotUpgrade) && kept,
             format!("facts travel {facts_travel}, result {result:?}, kept {kept}"),
         ),
     ));
@@ -1369,15 +1369,23 @@ fn colour_refusal_checks() -> Checks {
     drop(held);
     state.carry_known(&first, &middle);
     state.carry_known(&middle, &third);
-    let described: Vec<u8> = state
-        .known
-        .values()
-        .filter(|facts| facts.template == crate::inventory::own_template("shared_part", "a"))
-        .map(|facts| facts.upgrade_level)
-        .collect();
+    let wanted_a = first
+        .get(&crate::inventory::own_template("shared_part", "a"))
+        .expect("module a's own part")
+        .clone();
+    let wanted_b = middle
+        .get(&crate::inventory::own_template("shared_part", "b"))
+        .expect("module b's own part")
+        .clone();
+    let holds_a = state.known.get(&wanted_a.template) == Some(&wanted_a);
+    let holds_b = state.known.get(&wanted_b.template) == Some(&wanted_b);
+    let shared = third.get("shared_part").is_some_and(|facts| {
+        facts.upgrade == wanted_b.upgrade && facts.upgrade_level != wanted_a.upgrade_level
+    });
     let new = state
         .make_item(&third, "new_crystal", PARTY, 1, None)
-        .map_or(0, |id| id.0);
+        .expect("the crystal for the swap")
+        .0;
     world.set_script_state(state.clone());
     let before = state.clone();
     let mut out = seeded_out();
@@ -1388,35 +1396,54 @@ fn colour_refusal_checks() -> Checks {
     checks.push((
         "the facts of the module a part was fitted in answer against a later shared template",
         check(
-            described == vec![3] && result.is_err() && kept,
-            format!("described {described:?}, result {result:?}, kept {kept}"),
+            holds_a
+                && holds_b
+                && shared
+                && result == Err(Notice::CannotUpgrade)
+                && kept,
+            format!(
+                "holds a {holds_a}, holds b {holds_b}, shared {shared}, result {result:?}, kept {kept}"
+            ),
         ),
     ));
 
-    // The same two module changes, but every description of the fitted part
-    // allows the swap: it was fitted in a module whose own template of its
-    // resref asked level 1, the module entered reads that resref at level 0,
-    // and the new hilt takes level 1. The descriptions still differ, so the
-    // part's origin is not recoverable, but each of them licenses the swap,
-    // so the loadout the player can see is the one they get.
+    // A route through two module changes where every description of the
+    // fitted part allows the swap: it was fitted in a module whose own
+    // template of its resref asked level 1, both modules entered read that
+    // resref at level 0, and the new hilt takes level 1. The three
+    // descriptions still differ, so the part's origin is not recoverable,
+    // but each of them licenses the swap, so the loadout the player can see
+    // is the one they get.
     let left = shadow_module("a", 1, 1);
-    let entered = shadow_module("b", 1, 0);
+    let middle = shadow_module("b", 1, 0);
+    let entered = shadow_module("c", 1, 0);
     let mut world = colour_world(left.clone());
     let saber = give_with(&mut world, &left, "slot_saber", PARTY, None);
     let mut state = world.script_state().clone();
     let mut held = state.items.get_mut(&saber).expect("slot_saber");
     held.fitted = vec![String::new(), "shared_part".into()];
     drop(held);
-    state.carry_known(&left, &entered);
+    state.carry_known(&left, &middle);
+    state.carry_known(&middle, &entered);
+    let wanted_a = left
+        .get(&crate::inventory::own_template("shared_part", "a"))
+        .expect("module a's own part")
+        .clone();
+    let wanted_b = middle
+        .get(&crate::inventory::own_template("shared_part", "b"))
+        .expect("module b's own part")
+        .clone();
+    let holds_a = state.known.get(&wanted_a.template) == Some(&wanted_a);
+    let holds_b = state.known.get(&wanted_b.template) == Some(&wanted_b);
     let new = state
         .make_item(&entered, "new_crystal", PARTY, 1, None)
-        .map_or(0, |id| id.0);
-    world.set_script_state(state);
-    let next = world.script_state().next_item;
-    let before = world.script_state().clone();
+        .expect("the crystal for the swap")
+        .0;
+    world.set_script_state(state.clone());
+    let next = state.next_item;
+    let before = state.clone();
     let mut out = seeded_out();
     let before_out = out.clone();
-    let mut state = world.script_state().clone();
     let result = state.fit(&entered, &mut out, saber, new, None);
     world.set_script_state(state);
     let expected = vec![
@@ -1436,7 +1463,9 @@ fn colour_refusal_checks() -> Checks {
         ),
     ];
     let goods = party_goods(&world);
-    let exact = goods == expected
+    let exact = holds_a
+        && holds_b
+        && goods == expected
         && world.script_state().next_item == next + 1
         && out_same(&out, &before_out)
         && count(&world, "new_crystal") == 0
@@ -1446,7 +1475,7 @@ fn colour_refusal_checks() -> Checks {
         "a colour swap goes ahead when every description of the fitted part allows it",
         check(
             result.is_ok() && exact,
-            format!("result {result:?}, goods {goods:?}"),
+            format!("holds a {holds_a}, holds b {holds_b}, result {result:?}, goods {goods:?}"),
         ),
     ));
 
@@ -1463,9 +1492,21 @@ fn colour_refusal_checks() -> Checks {
     held.fitted = vec![String::new(), "shared_part".into()];
     drop(held);
     state.carry_known(&left, &entered);
+    let wanted_a = left
+        .get(&crate::inventory::own_template("shared_part", "a"))
+        .expect("module a's own part")
+        .clone();
+    let wanted_b = entered
+        .get(&crate::inventory::own_template("shared_part", "b"))
+        .expect("module b's own part")
+        .clone();
+    let holds_a = state.known.get(&wanted_a.template) == Some(&wanted_a);
+    let reads_higher =
+        wanted_b.upgrade == wanted_a.upgrade && wanted_b.upgrade_level > wanted_a.upgrade_level;
     let new = state
         .make_item(&entered, "new_crystal", PARTY, 1, None)
-        .map_or(0, |id| id.0);
+        .expect("the crystal for the swap")
+        .0;
     world.set_script_state(state.clone());
     let before = state.clone();
     let mut out = seeded_out();
@@ -1476,8 +1517,13 @@ fn colour_refusal_checks() -> Checks {
     checks.push((
         "a colour swap refuses when the module entered reads the fitted part higher than the new hilt",
         check(
-            result.is_err() && kept,
-            format!("result {result:?}, kept {kept}"),
+            holds_a
+                && reads_higher
+                && result == Err(Notice::CannotUpgrade)
+                && kept,
+            format!(
+                "holds a {holds_a}, reads higher {reads_higher}, result {result:?}, kept {kept}"
+            ),
         ),
     ));
     checks

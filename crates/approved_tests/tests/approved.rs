@@ -4412,7 +4412,7 @@ fn workshop_colour_mapping_refused() {
     probed(
         "workshop colour mapping refused",
         &sim::workshop_probes::colour_refusal_probes(),
-        12,
+        15,
     );
 }
 
