@@ -187,9 +187,13 @@ fn character_holders(save: &Save) -> HashSet<u32> {
         }
     }
     // TSL's puppets are party members with their own bodies; a puppet who has
-    // joined wears and carries things under its own object id.
+    // joined wears and carries things under its own object id. A puppet that has
+    // not joined is one of the area's creatures, and its holdings are counted as
+    // a creature's, which is what the engine's own puppet listing does.
     for puppet in save.script.party.puppets.values() {
-        if let Some(object) = puppet.object {
+        if puppet.joined
+            && let Some(object) = puppet.object
+        {
             ids.insert(object);
         }
     }
@@ -234,6 +238,20 @@ fn holding(save: &Save, id: u32, item: &Item, known: &HashSet<u32>) -> Holding {
 /// How the save shows a colour part on `item`. A part in a colour slot wins:
 /// the template sign alone cannot tell a recoloured hilt from the hilt the
 /// colour came off, so it is only reported when there is no part to read.
+/// Whether `part` is a crystal this module can speak of a colour swap with: its
+/// facts name a hilt, this module catalogues that hilt, and the hilt is of the
+/// host's base item. A save that has already had the swap done names the host's
+/// own template, and one that has it still to do names a sibling hilt; a crystal
+/// that recolours a template this module does not have proves nothing about
+/// colour, because no route here could have installed it.
+fn recolours_a_catalogued_hilt(catalog: &Catalog, host: &ItemFacts, part: &ItemFacts) -> bool {
+    part.recolours.iter().any(|made| {
+        catalog
+            .get(made)
+            .is_some_and(|hilt| hilt.base_item == host.base_item)
+    })
+}
+
 fn colour_sign(
     catalog: Option<&Catalog>,
     facts: Option<&ItemFacts>,
@@ -262,7 +280,7 @@ fn colour_sign(
         // holding anything else leaves the colour unsettled rather than settled
         // in favour of a swap.
         let colour = facts_in_play(catalog, known, part)
-            .is_some_and(|part_facts| !part_facts.recolours.is_empty());
+            .is_some_and(|part_facts| recolours_a_catalogued_hilt(catalog, facts, part_facts));
         if !colour {
             return Colour::Unknown;
         }
@@ -362,7 +380,7 @@ pub fn inspect(save: &Save, catalog: Option<&Catalog>) -> OwnershipReport {
         // The parts installed in the item have to be described somewhere too,
         // or the item is only half accounted for.
         let mut unresolved_parts = 0;
-        if catalog.is_some() {
+        if let Some(catalog) = catalog {
             for (slot, part) in item.fitted.iter().enumerate() {
                 if part.is_empty() {
                     continue;
@@ -372,16 +390,22 @@ pub fn inspect(save: &Save, catalog: Option<&Catalog>) -> OwnershipReport {
                 // otherwise the save claims a fitted part this save cannot
                 // explain, which is counted as unresolved, not as fitted.
                 let declared = facts.and_then(|facts| facts.slot_kinds.get(slot)).copied();
-                let described =
-                    catalog.and_then(|catalog| facts_in_play(catalog, &save.script.known, part));
+                let described = facts_in_play(catalog, &save.script.known, part);
                 let upgrade = described.and_then(|part_facts| part_facts.upgrade);
                 let host_level = facts.map(|facts| facts.upgrade_level);
                 let part_level = described.map(|part_facts| part_facts.upgrade_level);
-                // Something that recolours a hilt is what the colour route
-                // installs, and it is the only thing a colour slot may hold
-                // without being an upgrade.
-                let recolours =
-                    described.is_some_and(|part_facts| !part_facts.recolours.is_empty());
+                // The part may also have come with the host's template instead
+                // of being installed on the bench: an item made of a template
+                // starts with the parts that template lists, whatever their
+                // level, so the bench's level rule does not speak of those.
+                let from_the_template = facts
+                    .is_some_and(|facts| facts.parts.get(slot).map(String::as_str) == Some(part));
+                // What the colour route installs in a colour slot is a crystal
+                // that recolours another hilt this module catalogues, which is
+                // what its own route test asks for.
+                let colour_part = described.is_some_and(|part_facts| {
+                    facts.is_some_and(|host| recolours_a_catalogued_hilt(catalog, host, part_facts))
+                });
                 let why = match (declared, described.is_some(), upgrade) {
                     (None, _, _) => Some(format!(
                         "item {id} has the part {part} in slot {slot}, which its host's facts do not declare"
@@ -394,9 +418,9 @@ pub fn inspect(save: &Save, catalog: Option<&Catalog>) -> OwnershipReport {
                     // hilt's own template instead of fitting an upgrade, so
                     // such a part needs no upgrade of its own. Anything else
                     // there is a part this save cannot explain.
-                    (Some(COLOUR_SLOT), true, None) if recolours => None,
+                    (Some(COLOUR_SLOT), true, None) if colour_part => None,
                     (Some(COLOUR_SLOT), true, None) => Some(format!(
-                        "item {id} has the part {part} in colour slot {slot}, which is not a crystal that recolours a hilt"
+                        "item {id} has the part {part} in colour slot {slot}, which is no crystal that recolours a hilt this module catalogues"
                     )),
                     (Some(_), true, None) => Some(format!(
                         "item {id} has the part {part} in slot {slot}, which is not an upgrade this module or the save describes"
@@ -409,6 +433,7 @@ pub fn inspect(save: &Save, catalog: Option<&Catalog>) -> OwnershipReport {
                     // there, unless it is a crystal, which any hilt takes.
                     (Some(_), true, Some((_, part_kind)))
                         if part_kind != sim::inventory::CRYSTAL
+                            && !from_the_template
                             && part_level.unwrap_or(0) > host_level.unwrap_or(0) =>
                     {
                         Some(format!(
