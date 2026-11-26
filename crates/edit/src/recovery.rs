@@ -252,15 +252,16 @@ fn recolours_a_catalogued_hilt(catalog: &Catalog, host: &ItemFacts, part: &ItemF
     })
 }
 
-/// Whether `State::fit` would spend `part` on the hilt rather than on a slot:
+/// The hilt `State::fit` would change `host` into by spending `part` on it:
 /// the colour route fires when the part's facts name a hilt of the host's base
-/// item other than the host itself, and that route changes the hilt's template
-/// and hands the crystal back. A part like that never reaches the colour slot a
-/// save may claim it sits in.
-fn recolours_another_hilt(catalog: &Catalog, host: &ItemFacts, part: &ItemFacts) -> bool {
+/// item other than the host itself, and that route changes the host's template
+/// and hands the part back. `None` means the part goes to the slot route and
+/// fills a slot.
+fn recolour_route(catalog: &Catalog, host: &ItemFacts, part: &ItemFacts) -> Option<String> {
     catalog
         .recolour(part, host.base_item)
-        .is_some_and(|made| made != host.template)
+        .filter(|made| *made != host.template)
+        .map(str::to_string)
 }
 
 fn colour_sign(
@@ -411,6 +412,13 @@ pub fn inspect(save: &Save, catalog: Option<&Catalog>) -> OwnershipReport {
                 // level, so the bench's level rule does not speak of those.
                 let from_the_template = facts
                     .is_some_and(|facts| facts.parts.get(slot).map(String::as_str) == Some(part));
+                // The hilt the part's own facts would turn its host into, when
+                // they name a colour route away from the host. `fit_inner` takes
+                // that route before it looks at any slot, and it spends the part
+                // on the hilt instead of filling the slot.
+                let route = facts
+                    .zip(described)
+                    .and_then(|(host, part_facts)| recolour_route(catalog, host, part_facts));
                 let why = match (declared, described.is_some(), upgrade) {
                     (None, _, _) => Some(format!(
                         "item {id} has the part {part} in slot {slot}, which its host's facts do not declare"
@@ -439,20 +447,26 @@ pub fn inspect(save: &Save, catalog: Option<&Catalog>) -> OwnershipReport {
                         "item {id} has the part {part} in slot {slot}, whose kind {part_kind} is not the kind {kind} its host declares"
                     )),
                     // A colour slot also has to hold a part the slot route could
-                    // have left there. A part whose facts would take the colour
-                    // route changed the hilt instead, so it is not this slot's
-                    // tenant, and the save that names it here claims a fitted part
-                    // the engine could not have fitted.
+                    // have left there. A part whose facts name a colour route to
+                    // another hilt went through that route, which changes the
+                    // hilt's template and hands the part back, so it never filled
+                    // a slot. A part the host's own template names at this index
+                    // is in the slot because the template says it is: `make_item`
+                    // and `new_item` copy those parts with no fit test at all, so
+                    // the route says nothing about them. Any other part sits in a
+                    // host its own facts would change into another hilt. Such a
+                    // part is the tenant of the hilt its facts name, or of an
+                    // earlier template of this host that was recoloured: the save
+                    // keeps no note of which, so the part is not settled as a
+                    // fitted colour part.
                     (Some(COLOUR_SLOT), true, Some((_, _)))
-                        if described.is_some_and(|part_facts| {
-                            facts.is_some_and(|host| {
-                                recolours_another_hilt(catalog, host, part_facts)
-                            })
-                        }) =>
+                        if !from_the_template && route.is_some() =>
                     {
-                        Some(format!(
-                            "item {id} has the part {part} in colour slot {slot}, which would recolour its host instead of filling the slot"
-                        ))
+                        route.map(|other| {
+                            format!(
+                                "item {id} has the part {part} in colour slot {slot}, whose facts recolour {other}, so the save does not say which hilt it was fitted in"
+                            )
+                        })
                     }
                     // And the host has to be able to take the part: one of a
                     // level above the host's own could not have been fitted
