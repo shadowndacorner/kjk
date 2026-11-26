@@ -1324,17 +1324,26 @@ fn colour_refusal_checks() -> Checks {
         .get(&saber)
         .is_some_and(|held| held.fitted.get(1).map(String::as_str) == Some("slot_upgrade"));
     let reaches = swap_reaches_preserves(&catalog, &before, saber, new, "slot_saber_red");
+    // The part could also have been fitted in the hilt it sits in, and it is
+    // within the level the new hilt takes: otherwise a level rule refuses the
+    // swap for a reason this probe does not name, and the slot-kind rule could
+    // be missing from the code without anyone noticing.
+    let origin = catalog.get("slot_upgrade").is_some_and(|facts| {
+        hilt_could_take(&catalog, "slot_saber", facts)
+            && facts.upgrade_level <= hilt_level(&catalog, "slot_saber_red")
+    });
     checks.push((
         "a colour swap with a different TSL slot kind refuses",
         check(
             slot_kind_differs
                 && fitted_in_slot
+                && origin
                 && reaches
                 && result == Err(Notice::CannotUpgrade)
                 && kept
                 && swapped,
             format!(
-                "part kind {fitted_part_kind:?}, old slot 1 kind {old_slot_kind:?}, new slot 1 kind {new_slot_kind:?}, fitted there {fitted_in_slot}, swap reaches `preserves` {reaches}, result {result:?}, kept {kept}"
+                "part kind {fitted_part_kind:?}, old slot 1 kind {old_slot_kind:?}, new slot 1 kind {new_slot_kind:?}, fitted there {fitted_in_slot}, part could be fitted there and is within the new hilt's level {origin}, swap reaches `preserves` {reaches}, result {result:?}, kept {kept}"
             ),
         ),
     ));
@@ -1769,20 +1778,25 @@ fn colour_refusal_checks() -> Checks {
     let named = fitted_names(&before_second, saber, 1, "shared_part");
     let slots = both_slots_take(&third, "slot_saber", "slot_saber_red", 1, 1);
     let reaches = swap && named && slots;
+    // Stated here rather than borrowed from the first hop's probe: the part
+    // came from module a's hilt, which could take a part of its kind and
+    // level, and the two descriptions are of the resref the slot names.
+    let origin = hilt_could_take(&left, "slot_saber", &part_a)
+        && descriptions_of(&part_a, &part_b, "shared_part", false);
     checks.push((
         "the facts of the module a part was fitted in survive a second module change",
         check(
             kept_facts
                 && holds_b
                 && has_crystal
-                && shape
+                && origin
                 && shape_c
                 && reaches
                 && result == Err(Notice::CannotUpgrade)
                 && kept
                 && swapped,
             format!(
-                "kept_facts {kept_facts}, holds b {holds_b}, crystal {has_crystal}, premises a/b/hilt {shape}, c asks {:?} at {}, swap {swap}, the slot names the part {named}, both hilts take the kind there {slots}, result {result:?}, kept {kept}",
+                "kept_facts {kept_facts}, holds b {holds_b}, crystal {has_crystal}, a's hilt could take the part and both descriptions are of the fitted resref {origin}, c asks {:?} at {}, swap {swap}, the slot names the part {named}, both hilts take the kind there {slots}, result {result:?}, kept {kept}",
                 part_c.upgrade,
                 part_c.upgrade_level
             ),
