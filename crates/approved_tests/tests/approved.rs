@@ -5034,6 +5034,24 @@ fn save_edits() {
     probed("save editor", &save_editor::probes::all(), 0);
 }
 
+/// A save's holdings counted once without writing or changing the save.
+/// Party-loose, carried, equipped, other and unknown holders are separate;
+/// KOTOR rows, TSL slots and a colour crystal are counted once. Approved by
+/// the consolidated owner pass on 2026-11-24 as
+/// `recovery_inventory_accounting`.
+#[cfg(feature = "editor")]
+#[test]
+fn recovery_inventory_accounting() {
+    probed(
+        "recovery inventory accounting",
+        &[(
+            "recovery inventory accounting",
+            edit::probes::recovery::accounting(),
+        )],
+        1,
+    );
+}
+
 /// The saves' safety net (`saves::safety_probes`): the meta's new fields
 /// and an older meta, a damaged save listed and refused, one without a hash
 /// trusted, autosaves rotating, the backup before a new release, a failed

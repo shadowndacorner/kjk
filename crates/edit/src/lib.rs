@@ -14,6 +14,7 @@ mod keeping;
 mod open;
 mod party;
 mod persona;
+mod recovery;
 mod sheets;
 mod warnings;
 
@@ -23,6 +24,9 @@ pub use data::{Data, InstallSource};
 pub use edits::Editor;
 pub use open::{Opened, Refusal, open, open_bytes};
 pub use party::{PartyChange, party_after, pending_party};
+pub use recovery::{
+    Holding, ItemOwnership, OwnershipReport, first_seat_holder, inspect, item, seat_holder,
+};
 pub use warnings::{feat_warning, power_warning};
 
 #[cfg(feature = "probes")]

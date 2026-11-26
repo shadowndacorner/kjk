@@ -56,5 +56,13 @@ jobs:
       - name: clippy
         run: cargo clippy -p edit -p save_editor --all-targets --all-features -- -D warnings
 
-      - name: save_edits
-        run: cargo test --release -p approved_tests --features editor --test approved save_edits
+      # The editor's own permanent checks: the save edits and the recovery
+      # accounting (REC-01). Both are named here, so a filter cannot quietly
+      # leave one out.
+      - name: editor checks
+        run: cargo test --release -p approved_tests --features editor --test approved -- save_edits recovery_inventory_accounting
+
+      # The recovery accounting (REC-01) is a permanent check of its own, so
+      # it gets its own step rather than hiding behind the `save_edits` filter.
+      - name: recovery accounting
+        run: cargo test --release -p approved_tests --features editor --test approved recovery_inventory_accounting
