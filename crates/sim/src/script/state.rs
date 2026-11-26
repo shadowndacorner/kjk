@@ -1064,20 +1064,44 @@ impl State {
     /// `known` for a module whose catalog is `next`, leaving one whose
     /// catalog was `last`: the facts of every item in play `next` lacks,
     /// and of every upgrade fitted to one (TSL's `Item::fitted`).
+    ///
+    /// A part is kept when `next` answers for it with a different template
+    /// than `last` did. TSL's save slots name a fitted part by its bare
+    /// resref, and a module's own template of that resref wins in its own
+    /// catalog (`Catalog::get`): a part fitted in the module being left is
+    /// then described by that module's template, not by the next module's.
+    /// Keeping both descriptions is what lets the upgrade bench tell that
+    /// the part's origin is unclear (`items::State::fitted_part`).
     pub(crate) fn carry_known(
         &mut self,
         last: &crate::inventory::Catalog,
         next: &crate::inventory::Catalog,
     ) {
-        let known = self
+        let mut carried: Vec<(String, crate::inventory::ItemFacts)> = self
             .items
             .values()
             .flat_map(|item| std::iter::once(&item.template).chain(&item.fitted))
-            .filter(|template| next.get(template).is_none())
+            .filter(|template| {
+                next.get(template).is_none_or(|now| {
+                    last.get(template)
+                        .is_none_or(|was| was.template != now.template)
+                })
+            })
             .filter_map(|template| self.item_facts(last, template).cloned())
             .map(|facts| (facts.template.clone(), facts))
             .collect();
-        self.known = known;
+        // Facts carried from further back still answer, unless the module
+        // entered really has that very template. A part fitted three modules
+        // ago keeps its description through each change.
+        carried.extend(
+            std::mem::take(&mut self.known)
+                .into_iter()
+                .filter(|(template, _)| {
+                    next.get(template)
+                        .is_none_or(|now| now.template != *template)
+                }),
+        );
+        self.known = carried.into_iter().collect();
         self.items.touch();
     }
 

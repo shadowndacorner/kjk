@@ -715,7 +715,9 @@ impl State {
                 }
             }
         };
-        if let Some(facts) = catalog.get(fitted) && !see(facts) {
+        if let Some(facts) = catalog.get(fitted)
+            && !see(facts)
+        {
             return None;
         }
         for (template, facts) in known {

@@ -1,4 +1,4 @@
 # The sim's hash moves on purpose: the upgrade bench keeps a refused change
-# out of the items, the allocator and the step's output, and a colour swap
-# now treats a fitted part's identity differently.
-sim = "the upgrade bench stages item, allocator and output changes and restores them together when a change is refused; a colour swap keeps a crystal of any level and a part carried in from an earlier module, and refuses when the module's catalog and the carried facts describe that part as two different parts"
+# out of the items, the allocator and the step's output, and it treats a
+# fitted part's identity more carefully.
+sim = "the upgrade bench stages item, allocator and output changes and restores them together when a change is refused; a colour swap keeps a crystal of any level, keeps the facts of a part fitted in an earlier module through a module change, and refuses when the module's catalog and those facts describe that part as two different parts"

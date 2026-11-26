@@ -496,6 +496,33 @@ fn shadowed_known_catalog(old_level: u8, own_level: u8) -> Catalog {
     ])
 }
 
+/// The hilt, its colour crystals and the module's own template of the
+/// fitted part's resref, as a module with a hilt of `host_level` and an own
+/// part of `part_level` sees them.
+fn shadow_module(which: &str, host_level: u8, part_level: u8) -> Catalog {
+    let old_saber = ItemFacts {
+        upgrade_level: host_level,
+        ..host("slot_saber", vec![0, 1], slots::RIGHT_WEAPON)
+    };
+    let new_saber = host("slot_saber_red", vec![0, 1], slots::RIGHT_WEAPON);
+    let old = ItemFacts {
+        recolours: vec!["slot_saber".into()],
+        ..part("old_crystal", 0, 0, Vec::new())
+    };
+    let new = ItemFacts {
+        recolours: vec!["slot_saber_red".into()],
+        ..part("new_crystal", 0, 0, Vec::new())
+    };
+    let own = crate::inventory::own_template("shared_part", which);
+    Catalog::new([
+        old_saber,
+        new_saber,
+        old,
+        new,
+        part(&own, 1, part_level, Vec::new()),
+    ])
+}
+
 fn slot_catalog() -> Catalog {
     Catalog::new([
         host("slot_saber", vec![COLOUR_SLOT, 0], slots::RIGHT_WEAPON),
@@ -577,8 +604,12 @@ fn the_rest_unchanged(before: &crate::script::State, after: &crate::script::Stat
     let mut same = after.clone();
     same.items = before.items.clone();
     same.next_item = before.next_item;
-    same.known = before.known.clone();
     same == *before
+}
+
+/// The number of items in play anywhere, held by anyone.
+fn items_in_play(world: &SimWorld) -> usize {
+    world.script_state().items.values().count()
 }
 
 /// Whether two step outputs are the same. Each is destructured field by
@@ -861,6 +892,8 @@ fn return_atomic_checks() -> Checks {
     let exact = goods == expected
         && world.script_state().next_item == next + 2
         && out_same(&out, &before_out)
+        && world.script_state().known == before.known
+        && items_in_play(&world) == 3
         && the_rest_unchanged(&before, world.script_state());
     checks.push((
         "a stacked K1 host is split before a direct removal, leaving an exact bench",
@@ -903,6 +936,8 @@ fn return_atomic_checks() -> Checks {
         && world.script_state().next_item == next + 1
         && out_same(&out, &before_out)
         && count(&world, "bench_crystal") == 0
+        && world.script_state().known == before.known
+        && items_in_play(&world) == 2
         && the_rest_unchanged(&before, world.script_state());
     checks.push((
         "a stacked K1 host is split before a direct fitting, leaving an exact bench",
@@ -1061,6 +1096,8 @@ fn colour_refusal_checks() -> Checks {
         && world.script_state().next_item == next + 1
         && out_same(&out, &before_out)
         && count(&world, "new_crystal") == 0
+        && world.script_state().known == before.known
+        && items_in_play(&world) == 2
         && the_rest_unchanged(&before, world.script_state());
     checks.push((
         "a colour swap keeps a crystal of a level above the hilt's own",
@@ -1113,6 +1150,8 @@ fn colour_refusal_checks() -> Checks {
         && world.script_state().next_item == next + 1
         && out_same(&out, &before_out)
         && count(&world, "new_crystal") == 0
+        && world.script_state().known == before.known
+        && items_in_play(&world) == 2
         && the_rest_unchanged(&before, world.script_state());
     checks.push((
         "a colour swap keeps a part only State::known describes",
@@ -1225,12 +1264,73 @@ fn colour_refusal_checks() -> Checks {
         && world.script_state().next_item == next + 1
         && out_same(&out, &before_out)
         && count(&world, "new_crystal") == 0
+        && world.script_state().known == before.known
+        && items_in_play(&world) == 2
         && the_rest_unchanged(&before, world.script_state());
     checks.push((
         "a colour swap goes ahead when the catalog and the carried facts describe the same part",
         check(
             result.is_ok() && exact,
             format!("result {result:?}, goods {goods:?}"),
+        ),
+    ));
+
+    // The same shape as a real module change. The part was fitted in the
+    // module left, whose own template of its resref asks level 3; the module
+    // entered has its own template of that resref asking level 0, so its
+    // catalog answers for the bare slot value. The facts of the part fitted
+    // in the first module travel with the item, and the swap refuses.
+    let left = shadow_module("a", 3, 3);
+    let entered = shadow_module("b", 1, 0);
+    let mut world = colour_world(left.clone());
+    let saber = give_with(&mut world, &left, "slot_saber", PARTY, None);
+    let mut state = world.script_state().clone();
+    let mut held = state.items.get_mut(&saber).expect("slot_saber");
+    held.fitted = vec![String::new(), "shared_part".into()];
+    drop(held);
+    state.carry_known(&left, &entered);
+    let carried = state
+        .known
+        .values()
+        .any(|facts| facts.template == crate::inventory::own_template("shared_part", "a"));
+    let new = state
+        .make_item(&entered, "new_crystal", PARTY, 1, None)
+        .map_or(0, |id| id.0);
+    world.set_script_state(state.clone());
+    let before = state.clone();
+    let mut out = seeded_out();
+    let before_out = out.clone();
+    let result = state.fit(&entered, &mut out, saber, new, None);
+    let kept = state == before && out_same(&out, &before_out);
+    world.set_script_state(state);
+    checks.push((
+        "a part fitted in the module left keeps its facts across the change, and the swap refuses",
+        check(
+            carried && result.is_err() && kept,
+            format!("carried {carried}, result {result:?}, kept {kept}"),
+        ),
+    ));
+
+    // And again into a third module, whose own template asks a level of its
+    // own: the facts of the module the part was fitted in still answer.
+    let third = shadow_module("c", 1, 2);
+    let mut state = world.script_state().clone();
+    state.carry_known(&entered, &third);
+    let kept_facts = state
+        .known
+        .values()
+        .any(|facts| facts.template == crate::inventory::own_template("shared_part", "a"));
+    let before = state.clone();
+    let mut out = seeded_out();
+    let before_out = out.clone();
+    let result = state.fit(&third, &mut out, saber, new, None);
+    let kept = state == before && out_same(&out, &before_out);
+    world.set_script_state(state);
+    checks.push((
+        "the facts of the module a part was fitted in survive a second module change",
+        check(
+            kept_facts && result.is_err() && kept,
+            format!("kept_facts {kept_facts}, result {result:?}, kept {kept}"),
         ),
     ));
     checks
