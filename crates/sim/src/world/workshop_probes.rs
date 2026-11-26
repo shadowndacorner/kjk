@@ -1197,21 +1197,40 @@ fn colour_refusal_checks() -> Checks {
         ),
     ));
 
+    let part_a = part(
+        &crate::inventory::own_template("one_resref", "a"),
+        1,
+        0,
+        Vec::new(),
+    );
+    let part_b = part(
+        &crate::inventory::own_template("one_resref", "b"),
+        1,
+        3,
+        Vec::new(),
+    );
     let catalog = ambiguous_known_catalog();
     let mut world = colour_world(catalog.clone());
     let saber = give_with(&mut world, &catalog, "slot_saber", PARTY, None);
     let new = give_with(&mut world, &catalog, "new_crystal", PARTY, None);
     let mut state = world.script_state().clone();
-    for module in ["a", "b"] {
-        let template = crate::inventory::own_template("one_resref", module);
-        let level = if module == "a" { 0 } else { 3 };
-        state
-            .known
-            .insert(template.clone(), part(&template, 1, level, Vec::new()));
+    for facts in [&part_a, &part_b] {
+        state.known.insert(facts.template.clone(), facts.clone());
     }
     let mut held = state.items.get_mut(&saber).expect("slot_saber");
     held.fitted = vec![String::new(), "one_resref".into()];
     drop(held);
+    let holds_both = state.known.get(&part_a.template) == Some(&part_a)
+        && state.known.get(&part_b.template) == Some(&part_b);
+    // Both descriptions come from the save: this module's catalog has no
+    // template of the fitted resref at all. They ask the same kind at two
+    // levels, and the new hilt takes level 1.
+    let catalog_silent = catalog.get("one_resref").is_none();
+    let shape = part_a.upgrade == Some((0, 1))
+        && part_a.upgrade_level == 0
+        && part_b.upgrade == Some((0, 1))
+        && part_b.upgrade_level == 3
+        && hilt_level(&catalog, "slot_saber_red") == 1;
     world.set_script_state(state.clone());
     let before = state.clone();
     let mut out = seeded_out();
@@ -1220,10 +1239,17 @@ fn colour_refusal_checks() -> Checks {
     let kept = state == before && out_same(&out, &before_out);
     world.set_script_state(state);
     checks.push((
-        "two carried templates answering for one fitted resref refuse the colour swap",
+        "two carried templates asking different levels for one fitted resref refuse the colour swap",
         check(
-            result.is_err() && kept,
-            format!("result {result:?}, kept {kept}"),
+            holds_both
+                && catalog_silent
+                && shape
+                && result == Err(Notice::CannotUpgrade)
+                && kept,
+            format!(
+                "holds both {holds_both}, catalog says nothing {catalog_silent}, a asks {}, b asks {}, hilt 1, result {result:?}, kept {kept}",
+                part_a.upgrade_level, part_b.upgrade_level
+            ),
         ),
     ));
 
@@ -1231,17 +1257,31 @@ fn colour_refusal_checks() -> Checks {
     // fitted part is one; this module's own template of the same resref asks
     // only level 0, and it is the one the catalog answers with.
     let catalog = shadowed_known_catalog(3, 0);
+    let part_a = part(
+        &crate::inventory::own_template("shared_part", "a"),
+        1,
+        3,
+        Vec::new(),
+    );
+    let part_b = own_part(&catalog, "shared_part", "b");
     let mut world = colour_world(catalog.clone());
     let saber = give_with(&mut world, &catalog, "slot_saber", PARTY, None);
     let new = give_with(&mut world, &catalog, "new_crystal", PARTY, None);
     let mut state = world.script_state().clone();
-    let from = crate::inventory::own_template("shared_part", "a");
-    state
-        .known
-        .insert(from.clone(), part(&from, 1, 3, Vec::new()));
+    state.known.insert(part_a.template.clone(), part_a.clone());
     let mut held = state.items.get_mut(&saber).expect("slot_saber");
     held.fitted = vec![String::new(), "shared_part".into()];
     drop(held);
+    let holds_a = state.known.get(&part_a.template) == Some(&part_a);
+    // Only the carried description puts the part above what the new hilt
+    // takes: the module's own template of the same resref asks level 0, and
+    // it is the one the catalog answers the bare resref with.
+    let shape = part_a.upgrade == Some((0, 1))
+        && part_a.upgrade_level == 3
+        && part_b.upgrade == Some((0, 1))
+        && part_b.upgrade_level == 0
+        && catalog.get("shared_part") == Some(&part_b)
+        && hilt_level(&catalog, "slot_saber_red") == 1;
     world.set_script_state(state.clone());
     let before = state.clone();
     let mut out = seeded_out();
@@ -1252,8 +1292,11 @@ fn colour_refusal_checks() -> Checks {
     checks.push((
         "a module's own template of a fitted resref does not stand in for the carried part",
         check(
-            result.is_err() && kept,
-            format!("result {result:?}, kept {kept}"),
+            holds_a && shape && result == Err(Notice::CannotUpgrade) && kept,
+            format!(
+                "holds a {holds_a}, a asks {}, b asks {}, hilt 1, result {result:?}, kept {kept}",
+                part_a.upgrade_level, part_b.upgrade_level
+            ),
         ),
     ));
 
@@ -1365,29 +1408,38 @@ fn colour_refusal_checks() -> Checks {
 
     // And again into a third module, whose own template of the resref asks
     // level 1, which the new hilt takes: only the facts carried from module a,
-    // which ask level 3, can be what refuses the swap here.
+    // which ask level 3, can be what refuses the swap here. The state starts
+    // from before the first swap, so the crystal is still there and nothing
+    // the first swap did can be blamed.
     let third = shadow_module("c", 1, 1);
-    let mut state = world.script_state().clone();
+    let mut state = before.clone();
     state.carry_known(&entered, &third);
     let kept_facts = state.known.get(&part_a.template) == Some(&part_a);
+    let holds_b = state.known.get(&part_b.template) == Some(&part_b);
+    let has_crystal = state.items.get(&new).is_some();
     let part_c = own_part(&third, "shared_part", "c");
     let shape_c = part_c.upgrade == Some((0, 1))
         && part_c.upgrade_level == 1
         && third.get("shared_part") == Some(&part_c)
         && hilt_level(&third, "slot_saber_red") == 1;
-    let before = state.clone();
+    let before_second = state.clone();
     let mut out = seeded_out();
     let before_out = out.clone();
     let result = state.fit(&third, &mut out, saber, new, None);
-    let kept = state == before && out_same(&out, &before_out);
-    world.set_script_state(state);
+    let kept = state == before_second && out_same(&out, &before_out);
     checks.push((
         "the facts of the module a part was fitted in survive a second module change",
         check(
-            kept_facts && shape_c && result == Err(Notice::CannotUpgrade) && kept,
+            kept_facts
+                && holds_b
+                && has_crystal
+                && shape_c
+                && result == Err(Notice::CannotUpgrade)
+                && kept,
             format!(
-                "kept_facts {kept_facts}, c asks {:?} at {}, result {result:?}, kept {kept}",
-                part_c.upgrade, part_c.upgrade_level
+                "kept_facts {kept_facts}, holds b {holds_b}, crystal {has_crystal}, c asks {:?} at {}, result {result:?}, kept {kept}",
+                part_c.upgrade,
+                part_c.upgrade_level
             ),
         ),
     ));
