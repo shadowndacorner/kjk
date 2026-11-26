@@ -306,7 +306,7 @@ fn colour_catalog() -> Catalog {
         item("saber_red", 1000, PLAIN, false),
         old,
         new,
-        part("crystal", 0, 0, Vec::new()),
+        upgrade_part("crystal", 1, 0, 3, Vec::new()),
         upgrade_part("bench_crystal", 1, 0, 0, Vec::new()),
     ])
 }
@@ -382,7 +382,14 @@ fn incompatible_colour_catalog() -> Catalog {
         recolours: vec!["saber_red".into()],
         ..part("new_crystal", 0, 0, Vec::new())
     };
-    Catalog::new([old_saber, new_saber, old, new])
+    Catalog::new([
+        old_saber,
+        new_saber,
+        old,
+        new,
+        upgrade_part("crystal", 1, 0, 3, Vec::new()),
+        upgrade_part("other", 1, 0, 3, Vec::new()),
+    ])
 }
 
 /// A hilt with an ordinary crystal slot and an ordinary upgrade slot, whose
@@ -559,9 +566,9 @@ fn hilt_level(catalog: &Catalog, hilt: &str) -> u8 {
     catalog.get(hilt).expect("the hilt").upgrade_level
 }
 
-/// How many crystals this module's catalog names as `hilt`'s colour.
-/// `fit_inner` refuses a colour swap unless exactly one does, and it does that
-/// before it looks at anything fitted.
+/// How many crystals this module's catalog names as the hilt template `hilt`'s
+/// colour. `fit_inner` refuses a colour swap unless exactly one does, and it
+/// does that before it looks at anything fitted.
 fn colour_mappings(catalog: &Catalog, hilt: &str) -> usize {
     catalog
         .iter()
@@ -569,42 +576,99 @@ fn colour_mappings(catalog: &Catalog, hilt: &str) -> usize {
         .count()
 }
 
-/// Whether fitting `crystal` is a colour swap of `hilt` at all, and which hilt
-/// it would produce (`fit_inner`'s route test through `Catalog::recolour`).
-fn colour_route_to(catalog: &Catalog, hilt: &str, crystal: &str, new_hilt: &str) -> bool {
-    let (Some(host), Some(part)) = (catalog.get(hilt), catalog.get(crystal)) else {
-        return false;
-    };
-    catalog
-        .recolour(part, host.base_item)
-        .is_some_and(|template| template == new_hilt && new_hilt != hilt)
-}
-
-/// Whether the item under `id` is a loose crystal of `template` in a party
-/// member's hands, which is what `fit_inner` demands of the part it is given.
-fn crystal_in_hand(before: &crate::script::State, id: u32, template: &str) -> bool {
-    before.items.get(&id).is_some_and(|held| {
-        held.holder == PARTY && held.slot.is_none() && held.template == template
-    })
-}
-
-/// The premises a colour-swap probe has to hold for its refusal to mean what
-/// the probe says it means: exactly one crystal in this module's catalog names
-/// `hilt` as its colour, `crystal` really recolours `hilt` into `new_hilt`, and
-/// `id` is that crystal, loose in a party member's hands. With these the swap
-/// reaches `State::preserves`, so a refusal there cannot be an earlier refusal
-/// in `fit_inner` passing for the one under test.
-fn colour_swap_reaches_preserves(
-    before: &crate::script::State,
+/// What fitting the crystal item `crystal` into the hilt item `hilt` comes to
+/// in this module, exactly as `fit_inner` sees it: the templates those two
+/// items really hold, resolved through the catalog and the save's carried
+/// facts; the crystal's colour route, with its own hilt filtered out; and the
+/// count of crystals naming the hilt they hold as their colour. `None` means
+/// the fitting is not a colour swap at all, or is one `fit_inner` would refuse
+/// before the route. `Some((new hilt, old mappings))` is the hilt the route
+/// aims at and how many old colour mappings it finds, which is what decides
+/// whether `State::preserves` is reached.
+fn colour_swap(
     catalog: &Catalog,
-    hilt: &str,
-    crystal: &str,
-    id: u32,
+    before: &crate::script::State,
+    hilt: u32,
+    crystal: u32,
+) -> Option<(String, usize)> {
+    let (Some(held_hilt), Some(held_part)) = (before.items.get(&hilt), before.items.get(&crystal))
+    else {
+        return None;
+    };
+    if held_part.holder != PARTY || held_part.slot.is_some() || hilt == crystal {
+        return None;
+    }
+    let (Some(host), Some(part)) = (
+        before.item_facts(catalog, &held_hilt.template),
+        before.item_facts(catalog, &held_part.template),
+    ) else {
+        return None;
+    };
+    let colour = catalog
+        .recolour(part, host.base_item)
+        .filter(|template| *template != host.template)?;
+    Some((colour.to_string(), colour_mappings(catalog, &host.template)))
+}
+
+/// Whether the swap the probe means is the swap that reaches
+/// `State::preserves`: a colour route to `new_hilt`, and exactly one crystal
+/// naming the hilt the item holds as its colour. A refusal with this true can
+/// only come from what is fitted, not from an earlier check in `fit_inner`.
+fn swap_reaches_preserves(
+    catalog: &Catalog,
+    before: &crate::script::State,
+    hilt: u32,
+    crystal: u32,
     new_hilt: &str,
 ) -> bool {
-    colour_mappings(catalog, hilt) == 1
-        && colour_route_to(catalog, hilt, crystal, new_hilt)
-        && crystal_in_hand(before, id, crystal)
+    colour_swap(catalog, before, hilt, crystal) == Some((new_hilt.to_string(), 1))
+}
+
+/// The save's slot `slot` of the item under `id` holds exactly `part`. This is
+/// the value a part description is looked up by, so a probe about a fitted part
+/// has to name it.
+fn fitted_names(before: &crate::script::State, id: u32, slot: usize, part: &str) -> bool {
+    before
+        .items
+        .get(&id)
+        .is_some_and(|held| held.fitted.get(slot).map(String::as_str) == Some(part))
+}
+
+/// That a refused swap left what is in play alone in both directions: the
+/// crystal it was given is still in the party's hands, and the crystal it
+/// would have put back is nowhere. `Out` carries no item ids, so this is how
+/// the probes say no item was consumed and none was made.
+fn nothing_swapped(world: &SimWorld, given: &str, returned: &str) -> bool {
+    count(world, given) == 1 && count(world, returned) == 0
+}
+
+/// The KOTOR 1 row `row` of `hilt` names a part this module really has, at
+/// that row and kind: the row is not a name floating free of the catalog.
+fn row_names_a_part(catalog: &Catalog, hilt: &str, row: u8) -> bool {
+    catalog
+        .get(hilt)
+        .and_then(|facts| facts.takes(row))
+        .is_some_and(|upgrade| {
+            catalog
+                .get(&upgrade.template)
+                .is_some_and(|part| part.upgrade == Some((u16::from(row), upgrade.kind)))
+        })
+}
+
+/// Both hilts take `kind` in slot `slot`, so a refusal about what is fitted
+/// there cannot be a slot-kind disagreement.
+fn both_slots_take(
+    catalog: &Catalog,
+    old_hilt: &str,
+    new_hilt: &str,
+    slot: usize,
+    kind: u8,
+) -> bool {
+    [old_hilt, new_hilt].iter().all(|hilt| {
+        catalog
+            .get(hilt)
+            .is_some_and(|facts| facts.slot_kinds.get(slot) == Some(&kind))
+    })
 }
 
 fn slot_catalog() -> Catalog {
@@ -1047,20 +1111,19 @@ fn colour_refusal_checks() -> Checks {
     let result = state.fit(&catalog, &mut out, saber, new, None);
     let kept = state == before && out_same(&out, &before_out);
     world.set_script_state(state);
-    // The named condition: this module's catalog names no crystal as
-    // `saber`'s colour, while the loose crystal in the party's hands really
-    // recolours `saber` into `saber_red`, so the refusal is the missing
-    // mapping and not the swap being no colour swap at all.
-    let no_old_colour = colour_mappings(&catalog, "saber") == 0;
-    let route = colour_route_to(&catalog, "saber", "new_crystal", "saber_red");
-    let in_hand = crystal_in_hand(&before, new, "new_crystal");
+    let swapped = nothing_swapped(&world, "new_crystal", "old_crystal");
+    // The named condition, read off the items really held: the swap is a
+    // colour swap of the hilt's own template `saber` into `saber_red`, and
+    // this module's catalog names no crystal as `saber`'s colour.
+    let swap = colour_swap(&catalog, &before, saber, new);
     checks.push((
         "a missing old colour mapping refuses without changing the save state or output",
         check(
-            no_old_colour && route && in_hand && result == Err(Notice::CannotUpgrade) && kept,
-            format!(
-                "no old colour mapping {no_old_colour}, route to saber_red {route}, crystal in hand {in_hand}, result {result:?}, kept {kept}"
-            ),
+            swap == Some(("saber_red".to_string(), 0))
+                && result == Err(Notice::CannotUpgrade)
+                && kept
+                && swapped,
+            format!("swap {swap:?}, result {result:?}, kept {kept}"),
         ),
     ));
 
@@ -1075,20 +1138,19 @@ fn colour_refusal_checks() -> Checks {
     let result = state.fit(&catalog, &mut out, saber, new, None);
     let kept = state == before && out_same(&out, &before_out);
     world.set_script_state(state);
-    // The named condition: two crystals name `saber` as the hilt they
-    // recolour, and the incoming crystal recolours it into `saber_red`, so the
-    // refusal is the ambiguous old colour.
-    let two_old_colours = colour_mappings(&catalog, "saber") == 2;
-    let route = colour_route_to(&catalog, "saber", "new_crystal", "saber_red");
-    let in_hand = crystal_in_hand(&before, new, "new_crystal");
+    let swapped = nothing_swapped(&world, "new_crystal", "old_crystal");
+    // The named condition, read off the items really held: the swap is a
+    // colour swap of `saber` into `saber_red`, and two crystals name the hilt
+    // the item holds as the hilt they recolour.
+    let swap = colour_swap(&catalog, &before, saber, new);
     checks.push((
         "two old colour mappings for the same saber refuse instead of choosing one",
         check(
-            two_old_colours && route && in_hand && result == Err(Notice::CannotUpgrade) && kept,
-            format!(
-                "{} old colour mappings, route to saber_red {route}, crystal in hand {in_hand}, result {result:?}, kept {kept}",
-                colour_mappings(&catalog, "saber")
-            ),
+            swap == Some(("saber_red".to_string(), 2))
+                && result == Err(Notice::CannotUpgrade)
+                && kept
+                && swapped,
+            format!("swap {swap:?}, result {result:?}, kept {kept}"),
         ),
     ));
 
@@ -1107,6 +1169,7 @@ fn colour_refusal_checks() -> Checks {
     let result = state.fit(&catalog, &mut out, saber, new, None);
     let kept = state == before && out_same(&out, &before_out);
     world.set_script_state(state);
+    let swapped = nothing_swapped(&world, "new_crystal", "old_crystal");
     // The named condition: the hilt really carries the K1 power-crystal row,
     // the old hilt's table takes that row with the power crystal, the new
     // colour's hilt takes no such row, and the swap is a colour swap with one
@@ -1122,19 +1185,22 @@ fn colour_refusal_checks() -> Checks {
     let new_lacks_row = catalog
         .get("saber_red")
         .is_some_and(|facts| facts.takes(1).is_none());
-    let reaches =
-        colour_swap_reaches_preserves(&before, &catalog, "saber", "new_crystal", new, "saber_red");
+    // And the row's template is a part this module really has at that row.
+    let row_names = row_names_a_part(&catalog, "saber", 1);
+    let reaches = swap_reaches_preserves(&catalog, &before, saber, new, "saber_red");
     checks.push((
         "a colour swap that cannot keep an installed power crystal refuses",
         check(
             carries_row
                 && old_takes_row
                 && new_lacks_row
+                && row_names
                 && reaches
                 && result == Err(Notice::CannotUpgrade)
-                && kept,
+                && kept
+                && swapped,
             format!(
-                "carries row 1 {carries_row}, old hilt takes it with `crystal` {old_takes_row}, new hilt takes no row 1 {new_lacks_row}, colour swap reaches `preserves` {reaches}, result {result:?}, kept {kept}"
+                "carries row 1 {carries_row}, old hilt takes it with `crystal` {old_takes_row}, its row names a real part {row_names}, new hilt takes no row 1 {new_lacks_row}, swap reaches `preserves` {reaches}, result {result:?}, kept {kept}"
             ),
         ),
     ));
@@ -1154,6 +1220,7 @@ fn colour_refusal_checks() -> Checks {
     let result = state.fit(&catalog, &mut out, saber, new, None);
     let kept = state == before && out_same(&out, &before_out);
     world.set_script_state(state);
+    let swapped = nothing_swapped(&world, "new_crystal", "old_crystal");
     // The named condition: both hilts take the same row at the same kind, but
     // the old one asks `crystal` and the new colour's hilt asks `other`, so it
     // is the row's template that disagrees.
@@ -1171,18 +1238,23 @@ fn colour_refusal_checks() -> Checks {
         .items
         .get(&saber)
         .is_some_and(|held| held.upgrades == crate::inventory::upgrade_bit(1).expect("row 1"));
-    let reaches =
-        colour_swap_reaches_preserves(&before, &catalog, "saber", "new_crystal", new, "saber_red");
+    // Both rows name parts this module really has, so the difference is in the
+    // template the row asks for and not in a name neither catalog knows.
+    let rows_name =
+        row_names_a_part(&catalog, "saber", 1) && row_names_a_part(&catalog, "saber_red", 1);
+    let reaches = swap_reaches_preserves(&catalog, &before, saber, new, "saber_red");
     checks.push((
         "a colour swap with a different K1 row template refuses",
         check(
             other_template
                 && carries_row
+                && rows_name
                 && reaches
                 && result == Err(Notice::CannotUpgrade)
-                && kept,
+                && kept
+                && swapped,
             format!(
-                "old row {old_row:?}, new row {new_row:?}, carries row 1 {carries_row}, colour swap reaches `preserves` {reaches}, result {result:?}, kept {kept}"
+                "old row {old_row:?}, new row {new_row:?}, both rows name real parts {rows_name}, carries row 1 {carries_row}, swap reaches `preserves` {reaches}, result {result:?}, kept {kept}"
             ),
         ),
     ));
@@ -1202,6 +1274,7 @@ fn colour_refusal_checks() -> Checks {
     let result = state.fit(&catalog, &mut out, saber, new, None);
     let kept = state == before && out_same(&out, &before_out);
     world.set_script_state(state);
+    let swapped = nothing_swapped(&world, "new_crystal", "old_crystal");
     // The named condition: the part in slot 1 is really of the kind the old
     // hilt's slot 1 takes, and the new colour's hilt gives slot 1 a different
     // kind, so it is the slot kind that disagrees.
@@ -1225,14 +1298,7 @@ fn colour_refusal_checks() -> Checks {
         .items
         .get(&saber)
         .is_some_and(|held| held.fitted.get(1).map(String::as_str) == Some("slot_upgrade"));
-    let reaches = colour_swap_reaches_preserves(
-        &before,
-        &catalog,
-        "slot_saber",
-        "new_crystal",
-        new,
-        "slot_saber_red",
-    );
+    let reaches = swap_reaches_preserves(&catalog, &before, saber, new, "slot_saber_red");
     checks.push((
         "a colour swap with a different TSL slot kind refuses",
         check(
@@ -1240,9 +1306,10 @@ fn colour_refusal_checks() -> Checks {
                 && fitted_in_slot
                 && reaches
                 && result == Err(Notice::CannotUpgrade)
-                && kept,
+                && kept
+                && swapped,
             format!(
-                "part kind {fitted_part_kind:?}, old slot 1 kind {old_slot_kind:?}, new slot 1 kind {new_slot_kind:?}, fitted there {fitted_in_slot}, colour swap reaches `preserves` {reaches}, result {result:?}, kept {kept}"
+                "part kind {fitted_part_kind:?}, old slot 1 kind {old_slot_kind:?}, new slot 1 kind {new_slot_kind:?}, fitted there {fitted_in_slot}, swap reaches `preserves` {reaches}, result {result:?}, kept {kept}"
             ),
         ),
     ));
@@ -1292,14 +1359,8 @@ fn colour_refusal_checks() -> Checks {
         .items
         .get(&saber)
         .is_some_and(|held| held.fitted.first().map(String::as_str) == Some("hi_crystal"));
-    let reaches = colour_swap_reaches_preserves(
-        &before,
-        &catalog,
-        "slot_saber",
-        "new_crystal",
-        new,
-        "slot_saber_red",
-    );
+    let reaches = swap_reaches_preserves(&catalog, &before, saber, new, "slot_saber_red")
+        && both_slots_take(&catalog, "slot_saber", "slot_saber_red", 0, 0);
     let exact = crystal_above_both_hilts
         && reaches
         && goods == expected
@@ -1312,7 +1373,7 @@ fn colour_refusal_checks() -> Checks {
     let crystal_level = catalog
         .get("hi_crystal")
         .map(|facts| facts.upgrade_level)
-        .unwrap_or_default();
+        .unwrap_or(0);
     let old_hilt_level = hilt_level(&catalog, "slot_saber");
     let new_hilt_level = hilt_level(&catalog, "slot_saber_red");
     checks.push((
@@ -1320,7 +1381,7 @@ fn colour_refusal_checks() -> Checks {
         check(
             result.is_ok() && exact,
             format!(
-                "crystal level {crystal_level} above the old hilt's {old_hilt_level} and the new hilt's {new_hilt_level}: {crystal_above_both_hilts}; colour swap reaches `preserves` {reaches}; result {result:?}, goods {goods:?}"
+                "crystal level {crystal_level} above the old hilt's {old_hilt_level} and the new hilt's {new_hilt_level}: {crystal_above_both_hilts}; swap reaches `preserves` {reaches}; result {result:?}, goods {goods:?}"
             ),
         ),
     ));
@@ -1384,14 +1445,7 @@ fn colour_refusal_checks() -> Checks {
             .items
             .get(&saber)
             .is_some_and(|held| held.fitted.get(1).map(String::as_str) == Some("off_catalog"));
-    let reaches = colour_swap_reaches_preserves(
-        &before,
-        &catalog,
-        "slot_saber",
-        "new_crystal",
-        new,
-        "slot_saber_red",
-    );
+    let reaches = swap_reaches_preserves(&catalog, &before, saber, new, "slot_saber_red");
     let exact = only_the_save_describes_it
         && reaches
         && goods == expected
@@ -1406,7 +1460,7 @@ fn colour_refusal_checks() -> Checks {
         check(
             result.is_ok() && exact,
             format!(
-                "catalog silent about the fitted part {only_the_save_describes_it}, colour swap reaches `preserves` {reaches}, result {result:?}, goods {goods:?}"
+                "catalog silent about the fitted part {only_the_save_describes_it}, swap reaches `preserves` {reaches}, result {result:?}, goods {goods:?}"
             ),
         ),
     ));
@@ -1452,14 +1506,11 @@ fn colour_refusal_checks() -> Checks {
     let result = state.fit(&catalog, &mut out, saber, new, None);
     let kept = state == before && out_same(&out, &before_out);
     world.set_script_state(state);
-    let reaches = colour_swap_reaches_preserves(
-        &before,
-        &catalog,
-        "slot_saber",
-        "new_crystal",
-        new,
-        "slot_saber_red",
-    );
+    let swapped = nothing_swapped(&world, "new_crystal", "old_crystal");
+    let swap = swap_reaches_preserves(&catalog, &before, saber, new, "slot_saber_red");
+    let named = fitted_names(&before, saber, 1, "one_resref");
+    let slots = both_slots_take(&catalog, "slot_saber", "slot_saber_red", 1, 1);
+    let reaches = swap && named && slots;
     checks.push((
         "two carried templates asking different levels for one fitted resref refuse the colour swap",
         check(
@@ -1468,9 +1519,10 @@ fn colour_refusal_checks() -> Checks {
                 && shape
                 && reaches
                 && result == Err(Notice::CannotUpgrade)
-                && kept,
+                && kept
+                && swapped,
             format!(
-                "holds both {holds_both}, catalog says nothing {catalog_silent}, a asks {}, b asks {}, hilt 1, colour swap reaches `preserves` {reaches}, result {result:?}, kept {kept}",
+                "holds both {holds_both}, catalog says nothing {catalog_silent}, a asks {}, b asks {}, hilt 1, swap {swap}, the slot names the part {named}, both hilts take the kind there {slots}, result {result:?}, kept {kept}",
                 part_a.upgrade_level, part_b.upgrade_level
             ),
         ),
@@ -1512,20 +1564,16 @@ fn colour_refusal_checks() -> Checks {
     let result = state.fit(&catalog, &mut out, saber, new, None);
     let kept = state == before && out_same(&out, &before_out);
     world.set_script_state(state);
-    let reaches = colour_swap_reaches_preserves(
-        &before,
-        &catalog,
-        "slot_saber",
-        "new_crystal",
-        new,
-        "slot_saber_red",
-    );
+    let swap = swap_reaches_preserves(&catalog, &before, saber, new, "slot_saber_red");
+    let named = fitted_names(&before, saber, 1, "shared_part");
+    let slots = both_slots_take(&catalog, "slot_saber", "slot_saber_red", 1, 1);
+    let reaches = swap && named && slots;
     checks.push((
         "a module's own template of a fitted resref does not stand in for the carried part",
         check(
             holds_a && shape && reaches && result == Err(Notice::CannotUpgrade) && kept,
             format!(
-                "holds a {holds_a}, a asks {}, b asks {}, hilt 1, colour swap reaches `preserves` {reaches}, result {result:?}, kept {kept}",
+                "holds a {holds_a}, a asks {}, b asks {}, hilt 1, swap {swap}, the slot names the part {named}, both hilts take the kind there {slots}, result {result:?}, kept {kept}",
                 part_a.upgrade_level, part_b.upgrade_level
             ),
         ),
@@ -1641,20 +1689,16 @@ fn colour_refusal_checks() -> Checks {
     let result = state.fit(&entered, &mut out, saber, new, None);
     let kept = state == before && out_same(&out, &before_out);
     world.set_script_state(state);
-    let reaches = colour_swap_reaches_preserves(
-        &before,
-        &entered,
-        "slot_saber",
-        "new_crystal",
-        new,
-        "slot_saber_red",
-    );
+    let swap = swap_reaches_preserves(&entered, &before, saber, new, "slot_saber_red");
+    let named = fitted_names(&before, saber, 1, "shared_part");
+    let slots = both_slots_take(&entered, "slot_saber", "slot_saber_red", 1, 1);
+    let reaches = swap && named && slots;
     checks.push((
         "a part fitted in the module left keeps its facts across the change, and the swap refuses",
         check(
             holds_a && shape && reaches && result == Err(Notice::CannotUpgrade) && kept,
             format!(
-                "holds a {holds_a}, a asks {:?} at {}, b asks {:?} at {}, hilt {hilt}, colour swap reaches `preserves` {reaches}, result {result:?}, kept {kept}",
+                "holds a {holds_a}, a asks {:?} at {}, b asks {:?} at {}, hilt {hilt}, swap {swap}, the slot names the part {named}, both hilts take the kind there {slots}, result {result:?}, kept {kept}",
                 part_a.upgrade,
                 part_a.upgrade_level,
                 part_b.upgrade,
@@ -1684,14 +1728,10 @@ fn colour_refusal_checks() -> Checks {
     let before_out = out.clone();
     let result = state.fit(&third, &mut out, saber, new, None);
     let kept = state == before_second && out_same(&out, &before_out);
-    let reaches = colour_swap_reaches_preserves(
-        &before_second,
-        &third,
-        "slot_saber",
-        "new_crystal",
-        new,
-        "slot_saber_red",
-    );
+    let swap = swap_reaches_preserves(&third, &before_second, saber, new, "slot_saber_red");
+    let named = fitted_names(&before_second, saber, 1, "shared_part");
+    let slots = both_slots_take(&third, "slot_saber", "slot_saber_red", 1, 1);
+    let reaches = swap && named && slots;
     checks.push((
         "the facts of the module a part was fitted in survive a second module change",
         check(
@@ -1702,9 +1742,10 @@ fn colour_refusal_checks() -> Checks {
                 && shape_c
                 && reaches
                 && result == Err(Notice::CannotUpgrade)
-                && kept,
+                && kept
+                && swapped,
             format!(
-                "kept_facts {kept_facts}, holds b {holds_b}, crystal {has_crystal}, premises a/b/hilt {shape}, c asks {:?} at {}, colour swap reaches `preserves` {reaches}, result {result:?}, kept {kept}",
+                "kept_facts {kept_facts}, holds b {holds_b}, crystal {has_crystal}, premises a/b/hilt {shape}, c asks {:?} at {}, swap {swap}, the slot names the part {named}, both hilts take the kind there {slots}, result {result:?}, kept {kept}",
                 part_c.upgrade,
                 part_c.upgrade_level
             ),
@@ -1756,14 +1797,11 @@ fn colour_refusal_checks() -> Checks {
     let result = state.fit(&third, &mut out, saber, new, None);
     let kept = state == before && out_same(&out, &before_out);
     world.set_script_state(state);
-    let reaches = colour_swap_reaches_preserves(
-        &before,
-        &third,
-        "slot_saber",
-        "new_crystal",
-        new,
-        "slot_saber_red",
-    );
+    let swapped = nothing_swapped(&world, "new_crystal", "old_crystal");
+    let swap = swap_reaches_preserves(&third, &before, saber, new, "slot_saber_red");
+    let named = fitted_names(&before, saber, 1, "shared_part");
+    let slots = both_slots_take(&third, "slot_saber", "slot_saber_red", 1, 1);
+    let reaches = swap && named && slots;
     checks.push((
         "the facts of the module a part was fitted in answer against a later shared template",
         check(
@@ -1772,9 +1810,10 @@ fn colour_refusal_checks() -> Checks {
                 && asks
                 && reaches
                 && result == Err(Notice::CannotUpgrade)
-                && kept,
+                && kept
+                && swapped,
             format!(
-                "holds a {holds_a}, holds b {holds_b}, a asks {}, c asks {}, colour swap reaches `preserves` {reaches}, result {result:?}, kept {kept}",
+                "holds a {holds_a}, holds b {holds_b}, a asks {}, c asks {}, swap {swap}, the slot names the part {named}, both hilts take the kind there {slots}, result {result:?}, kept {kept}",
                 wanted_a.upgrade_level, shared.upgrade_level
             ),
         ),
@@ -1847,14 +1886,10 @@ fn colour_refusal_checks() -> Checks {
     // The carried facts still travel, and the swap is still the colour swap
     // the probe means: one old colour mapping, and the crystal in hand
     // recolouring the hilt into the intended new one.
-    let reaches = colour_swap_reaches_preserves(
-        &before,
-        &entered,
-        "slot_saber",
-        "new_crystal",
-        new,
-        "slot_saber_red",
-    );
+    let swap = swap_reaches_preserves(&entered, &before, saber, new, "slot_saber_red");
+    let named = fitted_names(&before, saber, 1, "shared_part");
+    let slots = both_slots_take(&entered, "slot_saber", "slot_saber_red", 1, 1);
+    let reaches = swap && named && slots;
     let exact = holds_a
         && holds_b
         && asks
@@ -1917,14 +1952,11 @@ fn colour_refusal_checks() -> Checks {
     let result = state.fit(&entered, &mut out, saber, new, None);
     let kept = state == before && out_same(&out, &before_out);
     world.set_script_state(state);
-    let reaches = colour_swap_reaches_preserves(
-        &before,
-        &entered,
-        "slot_saber",
-        "new_crystal",
-        new,
-        "slot_saber_red",
-    );
+    let swapped = nothing_swapped(&world, "new_crystal", "old_crystal");
+    let swap = swap_reaches_preserves(&entered, &before, saber, new, "slot_saber_red");
+    let named = fitted_names(&before, saber, 1, "shared_part");
+    let slots = both_slots_take(&entered, "slot_saber", "slot_saber_red", 1, 1);
+    let reaches = swap && named && slots;
     checks.push((
         "a colour swap refuses when the module entered reads the fitted part higher than the new hilt",
         check(
@@ -1932,9 +1964,10 @@ fn colour_refusal_checks() -> Checks {
                 && reads_higher
                 && reaches
                 && result == Err(Notice::CannotUpgrade)
-                && kept,
+                && kept
+                && swapped,
             format!(
-                "holds a {holds_a}, reads higher {reads_higher}, colour swap reaches `preserves` {reaches}, result {result:?}, kept {kept}"
+                "holds a {holds_a}, reads higher {reads_higher}, swap {swap}, the slot names the part {named}, both hilts take the kind there {slots}, result {result:?}, kept {kept}"
             ),
         ),
     ));
