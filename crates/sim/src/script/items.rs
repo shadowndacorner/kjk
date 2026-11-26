@@ -18,7 +18,7 @@ use crate::combat::sheet::{Sheet, Weapon};
 use crate::inventory::properties::Wearer;
 use crate::inventory::{
     CREDITS, CRYSTAL, Catalog, Cost, FIRST_ITEM, Held, Item, ItemFacts, PARTY, has_upgrade, pairs,
-    properties, rewear, slots, upgrade_bit,
+    properties, resref_of, rewear, slots, upgrade_bit,
 };
 use crate::notice::Notice;
 
@@ -740,6 +740,58 @@ impl State {
         Ok(value)
     }
 
+    /// The kind and level of the part `fitted` names. A fit writes the part's
+    /// own template into the save slot (`fit_inner`), and a module's own file
+    /// of a resref carries that module (`own_template`), so the name in the slot
+    /// and the resref a script reads can differ; both are read here, along with
+    /// every carried fact of that resref (`carry_known`). A route through more
+    /// than one module leaves more than one description of one resref behind.
+    /// The descriptions have to agree on the kind of part it is: a different kind
+    /// is a different part, and then this says none. They may ask different
+    /// levels, because two modules read the same resref at different levels,
+    /// and the highest level any of them asks is the one reported, so a
+    /// description from the module entered can never license a part that
+    /// another description makes too strong for the new item. A description
+    /// of something that is no upgrade at all also says none.
+    fn fitted_part(
+        known: &std::collections::BTreeMap<String, ItemFacts>,
+        catalog: &Catalog,
+        fitted: &str,
+    ) -> Option<(u8, u8)> {
+        let mut agreed: Option<(u8, u8)> = None;
+        let mut see = |facts: &ItemFacts| match facts.upgrade {
+            None => false,
+            Some((_, kind)) => {
+                match agreed {
+                    None => agreed = Some((kind, facts.upgrade_level)),
+                    Some((was, level)) if was == kind => {
+                        agreed = Some((kind, level.max(facts.upgrade_level)));
+                    }
+                    Some(_) => return false,
+                }
+                true
+            }
+        };
+        // The name in the slot, and the resref under it: a part fitted from a
+        // module's own archives is named `resref@module`, and the module entered
+        // has its own file of that resref, which is the one its catalog answers
+        // for the resref.
+        let resref = resref_of(fitted);
+        for name in [fitted, resref] {
+            if let Some(facts) = catalog.get(name)
+                && !see(facts)
+            {
+                return None;
+            }
+        }
+        for (template, facts) in known {
+            if (template == fitted || resref_of(template) == resref) && !see(facts) {
+                return None;
+            }
+        }
+        agreed
+    }
+
     /// Whether target facts and new facts keep each installed K1 row and TSL
     /// slot with the same part identity and slot kind. A part's facts come
     /// from the module's catalog or from `known`: a part fitted in an earlier
@@ -777,10 +829,11 @@ impl State {
             let Some(new_kind) = new_facts.slot_kinds.get(slot) else {
                 return false;
             };
-            let Some(part_facts) = self.item_facts(catalog, part) else {
-                return false;
-            };
-            let Some((_, part_kind)) = part_facts.upgrade else {
+            // A TSL save slot names the part by its bare resref, so the
+            // catalog and the carried facts can both answer for it. They have
+            // to agree on what the part is before the swap can be certified.
+            let Some((part_kind, part_level)) = Self::fitted_part(&self.known, catalog, part)
+            else {
                 return false;
             };
             if part_kind != *old_kind || part_kind != *new_kind {
@@ -789,7 +842,7 @@ impl State {
             // As `fit_inner`'s rule: an upgrade above the host's level
             // refuses, a crystal of any level fits (`CRYSTAL`, as TSL's
             // bench lists them).
-            if part_kind != CRYSTAL && part_facts.upgrade_level > new_facts.upgrade_level {
+            if part_kind != CRYSTAL && part_level > new_facts.upgrade_level {
                 return false;
             }
         }
