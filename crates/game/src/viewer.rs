@@ -27,6 +27,16 @@ use crate::material::{AreaLight, Fog};
 use crate::model_fx::{Chunk, ModelFx};
 use crate::weapons::{Arms, Owner};
 
+/// What `Viewer::place_appearance` dresses a creature in: its
+/// `appearance.2da` row, its body item and how it came to wear it, its
+/// `heads.2da` row, and its headgear.
+pub type Outfit<'a> = (
+    u32,
+    (Option<&'a str>, creature::Dressing),
+    Option<u8>,
+    Option<&'a str>,
+);
+
 /// A model placed in the scene at an offset, turned by `facing` radians
 /// about Z (game space).
 #[derive(Clone)]
@@ -1612,14 +1622,14 @@ impl CreatureLoad {
     }
 
     /// A creature of `appearance.2da` row `appearance` wearing `armour` (a
-    /// UTI) or nothing on its body and `headgear` (a UTI) or nothing on its
-    /// head, with the head of `heads.2da` row `head` where one is given
-    /// (else the row's own), dressed for `aligned`, as `place` places one
-    /// of a template.
+    /// UTI) or nothing on its body, put on or taken off as `dressing` says,
+    /// and `headgear` (a UTI) or nothing on its head, with the head of
+    /// `heads.2da` row `head` where one is given (else the row's own),
+    /// dressed for `aligned`, as `place` places one of a template.
     pub fn place_appearance(
         &mut self,
         (resolver, game): (&Resolver, Game),
-        (appearance, armour, head, headgear): (u32, Option<&str>, Option<u8>, Option<&str>),
+        (appearance, (armour, dressing), head, headgear): Outfit<'_>,
         owner: Option<&Resolver>,
         aligned: creature::Aligned,
         (position, facing): ([f32; 3], f32),
@@ -1627,10 +1637,11 @@ impl CreatureLoad {
     ) -> Result<Option<CreatureView>, String> {
         let name = format!("appearance {appearance}");
         let source = ResolverSource(resolver);
-        let mut look = creature::resolve_appearance(
+        let mut look = creature::resolve_dressed(
             &source,
             appearance,
             armour.map(str::to_string),
+            dressing,
             &mut self.tables,
         )
         .map_err(|refusal| format!("{name}: {refusal:?}"))?;
@@ -2102,18 +2113,41 @@ pub fn clip(
     if let Some(found) = find(model) {
         return Ok(Some(found));
     }
+    let talking = name.starts_with("tlk");
     let mut seen = vec![model.name.to_ascii_lowercase()];
     let mut next = next_supermodel(model, &mut seen);
     while let Some(super_name) = next {
         let Some(parent) = read_into(cache, resolver, &super_name)? else {
             break;
         };
-        if let Some(found) = find(parent) {
-            return Ok(Some(found));
+        let found = find(parent).filter(|found| !talking || shares_rest_pose(model, parent, found));
+        if found.is_some() {
+            return Ok(found);
         }
         next = next_supermodel(parent, &mut seen);
     }
     Ok(None)
+}
+
+const REST_TURN_TOLERANCE_DEGREES: f32 = 20.0;
+
+/// A clip keys absolute turns, so it only suits a body that rests as its
+/// supermodel does. A Rakata does not: its eye nodes rest at about 90 degrees,
+/// and the human `tlknorm` of `s_male02` turns them 86 to 178 degrees away.
+fn shares_rest_pose(body: &ModelIr, parent: &ModelIr, clip: &AnimationIr) -> bool {
+    clip.tracks
+        .iter()
+        .filter(|track| !track.orientations.is_empty())
+        .all(|track| {
+            let (Some(own), Some(shared)) = (body.node(&track.node), parent.node(&track.node))
+            else {
+                return true;
+            };
+            let turn = bevy::math::Quat::from_array(own.rotation)
+                .normalize()
+                .angle_between(bevy::math::Quat::from_array(shared.rotation).normalize());
+            turn.to_degrees() <= REST_TURN_TOLERANCE_DEGREES
+        })
 }
 
 /// The clips `clip` found, by the model whose animation each is and its
