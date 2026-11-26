@@ -19,7 +19,8 @@ pub enum Holding {
     Carried,
     /// A character wears it in a slot (`Item::slot` names the slot).
     Equipped,
-    /// It lies on the area's floor (`State::floor` names it).
+    /// It lies on the area's floor: the area holds it (`AREA`) and the save
+    /// lists it among the things lying there (`State::floor`).
     Floor,
     /// One of the area's containers holds it (`ObjectKind::Placeable`).
     Container,
@@ -27,6 +28,10 @@ pub enum Holding {
     Store,
     /// An area creature the save names no character for holds it.
     Creature,
+    /// An object of the area that is not a holder the engine gives items to:
+    /// a door, trigger, waypoint, sound or encounter. The save names the
+    /// holder; what it holds there is the anomaly.
+    AreaObject,
     /// Nothing in the save answers for `holder`: no character, no floor
     /// entry and no object of the area.
     Unknown,
@@ -71,8 +76,7 @@ pub struct ItemOwnership {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnershipReport {
     pub items: Vec<ItemOwnership>,
-    /// The units a party could actually spend: the stacks of items that are
-    /// not a store's stock.
+    /// The stacks that are not a store's stock, summed over every holder.
     pub units: u64,
     pub party_loose: usize,
     pub carried: usize,
@@ -81,6 +85,7 @@ pub struct OwnershipReport {
     pub containers: usize,
     pub store: usize,
     pub creatures: usize,
+    pub area_objects: usize,
     pub unknown: usize,
     /// Items whose stack is never spent (a store's stock).
     pub infinite: usize,
@@ -116,9 +121,33 @@ fn object_kind(save: &Save, holder: u32) -> Option<ObjectKind> {
         })
 }
 
+/// The bodies the save's characters have: every seat's player, and every
+/// companion the party lists, whether or not the save also carries that
+/// companion's sheet (`edit::characters` only reports the sheeted ones).
+fn character_holders(save: &Save) -> HashSet<u32> {
+    let mut ids: HashSet<u32> = save
+        .snapshot
+        .entities
+        .iter()
+        .filter(|entity| matches!(entity.kind, Kind::Avatar(_)))
+        .map(|entity| entity.id.0)
+        .collect();
+    for slot in save.script.party.available.values() {
+        if let Some(object) = slot.object {
+            ids.insert(object);
+        }
+        if let Some(kept) = &slot.kept {
+            ids.insert(kept.from);
+        }
+    }
+    ids
+}
+
 /// Who holds `item`: the party, a character, the area's floor, one of the
 /// area's objects, or nothing the save names. An item worn in a slot by a
-/// holder nothing answers for is unknown too, not equipped.
+/// holder nothing answers for is unknown too, not equipped. A save can keep
+/// listing an item among those lying on the floor after it was picked up, so
+/// the floor class needs the area as holder as well as the listing.
 fn holding(save: &Save, id: u32, item: &Item, known: &HashSet<u32>) -> Holding {
     if item.holder == PARTY {
         return Holding::PartyLoose;
@@ -130,24 +159,22 @@ fn holding(save: &Save, id: u32, item: &Item, known: &HashSet<u32>) -> Holding {
             Holding::Carried
         };
     }
-    if save.script.floor.contains_key(&id) {
+    if save.script.floor.contains_key(&id) && item.holder == sim::script::AREA.0 {
         return Holding::Floor;
     }
     match object_kind(save, item.holder) {
         Some(ObjectKind::Store) => Holding::Store,
         Some(ObjectKind::Placeable) => Holding::Container,
         Some(ObjectKind::Creature) => Holding::Creature,
-        Some(_) | None => Holding::Unknown,
+        Some(_) => Holding::AreaObject,
+        None => Holding::Unknown,
     }
 }
 
 /// What `save` holds. This reads only `save` and `catalog`: it writes no
 /// files and leaves the save byte-for-byte as it was.
 pub fn inspect(save: &Save, catalog: Option<&Catalog>) -> OwnershipReport {
-    let known_holders: HashSet<u32> = crate::characters(save, None)
-        .iter()
-        .filter_map(|character| crate::holder_of(save, &character.who))
-        .collect();
+    let known_holders = character_holders(save);
     let mut report = OwnershipReport {
         items: Vec::new(),
         units: 0,
@@ -158,6 +185,7 @@ pub fn inspect(save: &Save, catalog: Option<&Catalog>) -> OwnershipReport {
         containers: 0,
         store: 0,
         creatures: 0,
+        area_objects: 0,
         unknown: 0,
         infinite: 0,
         kotor_rows: 0,
@@ -222,6 +250,13 @@ pub fn inspect(save: &Save, catalog: Option<&Catalog>) -> OwnershipReport {
             Holding::Container => report.containers += 1,
             Holding::Store => report.store += 1,
             Holding::Creature => report.creatures += 1,
+            Holding::AreaObject => {
+                report.area_objects += 1;
+                report.ambiguities.push(format!(
+                    "item {id} is held by object {}, which does not hold items",
+                    item.holder
+                ));
+            }
             Holding::Unknown => report.unknown += 1,
         }
         match source {
