@@ -1229,7 +1229,7 @@ fn colour_refusal_checks() -> Checks {
 
     // The old hilt takes a part of level 3 and the carried facts say the
     // fitted part is one; this module's own template of the same resref asks
-    // only level 1, and it is the one the catalog answers with.
+    // only level 0, and it is the one the catalog answers with.
     let catalog = shadowed_known_catalog(3, 0);
     let mut world = colour_world(catalog.clone());
     let saber = give_with(&mut world, &catalog, "slot_saber", PARTY, None);
@@ -1325,11 +1325,19 @@ fn colour_refusal_checks() -> Checks {
     held.fitted = vec![String::new(), "shared_part".into()];
     drop(held);
     state.carry_known(&left, &entered);
-    let wanted = own_part(&left, "shared_part", "a");
-    let asks_a = wanted.upgrade == Some((0, 1)) && wanted.upgrade_level == 3;
-    let holds_a = state.known.get(&wanted.template) == Some(&wanted);
-    let asks_b = own_part(&entered, "shared_part", "b").upgrade_level == 0;
+    let part_a = own_part(&left, "shared_part", "a");
+    let part_b = own_part(&entered, "shared_part", "b");
+    let holds_a = state.known.get(&part_a.template) == Some(&part_a);
     let hilt = hilt_level(&entered, "slot_saber_red");
+    // What each module asks of the fitted resref, and what the module entered
+    // answers for the bare resref the save slot holds. Only module a reads the
+    // part above what the new hilt takes.
+    let shape = part_a.upgrade == Some((0, 1))
+        && part_a.upgrade_level == 3
+        && part_b.upgrade == Some((0, 1))
+        && part_b.upgrade_level == 0
+        && entered.get("shared_part") == Some(&part_b)
+        && hilt == 1;
     let new = state
         .make_item(&entered, "new_crystal", PARTY, 1, None)
         .expect("the crystal for the swap")
@@ -1344,27 +1352,29 @@ fn colour_refusal_checks() -> Checks {
     checks.push((
         "a part fitted in the module left keeps its facts across the change, and the swap refuses",
         check(
-            holds_a
-                && asks_a
-                && asks_b
-                && hilt == 1
-                && result == Err(Notice::CannotUpgrade)
-                && kept,
+            holds_a && shape && result == Err(Notice::CannotUpgrade) && kept,
             format!(
-                "holds a {holds_a}, a asks {}, b asks 0, hilt {hilt}, result {result:?}, kept {kept}",
-                wanted.upgrade_level
+                "holds a {holds_a}, a asks {:?} at {}, b asks {:?} at {}, hilt {hilt}, result {result:?}, kept {kept}",
+                part_a.upgrade,
+                part_a.upgrade_level,
+                part_b.upgrade,
+                part_b.upgrade_level
             ),
         ),
     ));
 
-    // And again into a third module, whose own template asks a level of its
-    // own: the facts of the module the part was fitted in still answer.
-    let third = shadow_module("c", 1, 2);
+    // And again into a third module, whose own template of the resref asks
+    // level 1, which the new hilt takes: only the facts carried from module a,
+    // which ask level 3, can be what refuses the swap here.
+    let third = shadow_module("c", 1, 1);
     let mut state = world.script_state().clone();
     state.carry_known(&entered, &third);
-    let kept_facts = state.known.get(&wanted.template) == Some(&wanted);
-    let c_asks = own_part(&third, "shared_part", "c").upgrade_level;
-    let asks_c = c_asks == 2;
+    let kept_facts = state.known.get(&part_a.template) == Some(&part_a);
+    let part_c = own_part(&third, "shared_part", "c");
+    let shape_c = part_c.upgrade == Some((0, 1))
+        && part_c.upgrade_level == 1
+        && third.get("shared_part") == Some(&part_c)
+        && hilt_level(&third, "slot_saber_red") == 1;
     let before = state.clone();
     let mut out = seeded_out();
     let before_out = out.clone();
@@ -1374,8 +1384,11 @@ fn colour_refusal_checks() -> Checks {
     checks.push((
         "the facts of the module a part was fitted in survive a second module change",
         check(
-            kept_facts && asks_c && result == Err(Notice::CannotUpgrade) && kept,
-            format!("kept_facts {kept_facts}, c asks {c_asks}, result {result:?}, kept {kept}"),
+            kept_facts && shape_c && result == Err(Notice::CannotUpgrade) && kept,
+            format!(
+                "kept_facts {kept_facts}, c asks {:?} at {}, result {result:?}, kept {kept}",
+                part_c.upgrade, part_c.upgrade_level
+            ),
         ),
     ));
 
@@ -1473,6 +1486,7 @@ fn colour_refusal_checks() -> Checks {
         && wanted_c.upgrade == Some((0, 1))
         && wanted_c.upgrade_level == 0
         && wanted_c.template == crate::inventory::own_template("shared_part", "c")
+        && entered.get("shared_part") == Some(&wanted_c)
         && hilt_level(&entered, "slot_saber_red") == 1;
     let new = state
         .make_item(&entered, "new_crystal", PARTY, 1, None)
