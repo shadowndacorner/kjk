@@ -689,13 +689,18 @@ impl State {
         Ok(value)
     }
 
-    /// The kind and level of the part `fitted` names, when every description
-    /// of it agrees. A TSL save slot names a fitted part by its bare resref,
-    /// so one part may be described by the module's catalog and by the facts
-    /// carried forward from the module it was fitted in (`carry_known`). A
-    /// module's own template hides the shared template of its resref
-    /// (`Catalog::get`), so the two can name different parts. When they
-    /// disagree the part's origin is unrecoverable, and this says none.
+    /// The kind and level of the part `fitted` names. A TSL save slot names a
+    /// fitted part by its bare resref, so one part may be described by the
+    /// module's catalog and by the facts carried forward from the module it
+    /// was fitted in (`carry_known`), and a route through more than one
+    /// module leaves more than one description of one resref behind. The
+    /// descriptions have to agree on the kind of part it is: a different kind
+    /// is a different part, and then this says none. They may ask different
+    /// levels, because two modules read the same resref at different levels,
+    /// and the highest level any of them asks is the one reported, so a
+    /// description from the module entered can never license a part that
+    /// another description makes too strong for the new item. A description
+    /// of something that is no upgrade at all also says none.
     fn fitted_part(
         known: &std::collections::BTreeMap<String, ItemFacts>,
         catalog: &Catalog,
@@ -705,14 +710,14 @@ impl State {
         let mut see = |facts: &ItemFacts| match facts.upgrade {
             None => false,
             Some((_, kind)) => {
-                let one = (kind, facts.upgrade_level);
                 match agreed {
-                    None => {
-                        agreed = Some(one);
-                        true
+                    None => agreed = Some((kind, facts.upgrade_level)),
+                    Some((was, level)) if was == kind => {
+                        agreed = Some((kind, level.max(facts.upgrade_level)));
                     }
-                    Some(was) => was == one,
+                    Some(_) => return false,
                 }
+                true
             }
         };
         if let Some(facts) = catalog.get(fitted)

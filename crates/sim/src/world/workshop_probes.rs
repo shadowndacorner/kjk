@@ -523,6 +523,28 @@ fn shadow_module(which: &str, host_level: u8, part_level: u8) -> Catalog {
     ])
 }
 
+/// A third shape of the module entered: its catalog has the shared template
+/// of the fitted part's resref, with no module's own marking on it.
+fn plain_shared_module(level: u8) -> Catalog {
+    let old_saber = host("slot_saber", vec![0, 1], slots::RIGHT_WEAPON);
+    let new_saber = host("slot_saber_red", vec![0, 1], slots::RIGHT_WEAPON);
+    let old = ItemFacts {
+        recolours: vec!["slot_saber".into()],
+        ..part("old_crystal", 0, 0, Vec::new())
+    };
+    let new = ItemFacts {
+        recolours: vec!["slot_saber_red".into()],
+        ..part("new_crystal", 0, 0, Vec::new())
+    };
+    Catalog::new([
+        old_saber,
+        new_saber,
+        old,
+        new,
+        part("shared_part", 1, level, Vec::new()),
+    ])
+}
+
 fn slot_catalog() -> Catalog {
     Catalog::new([
         host("slot_saber", vec![COLOUR_SLOT, 0], slots::RIGHT_WEAPON),
@@ -1289,10 +1311,11 @@ fn colour_refusal_checks() -> Checks {
     held.fitted = vec![String::new(), "shared_part".into()];
     drop(held);
     state.carry_known(&left, &entered);
-    let carried = state
-        .known
-        .values()
-        .any(|facts| facts.template == crate::inventory::own_template("shared_part", "a"));
+    let wanted = left
+        .get(&crate::inventory::own_template("shared_part", "a"))
+        .expect("module a's own part")
+        .clone();
+    let facts_travel = state.known.values().any(|facts| *facts == wanted);
     let new = state
         .make_item(&entered, "new_crystal", PARTY, 1, None)
         .map_or(0, |id| id.0);
@@ -1306,8 +1329,8 @@ fn colour_refusal_checks() -> Checks {
     checks.push((
         "a part fitted in the module left keeps its facts across the change, and the swap refuses",
         check(
-            carried && result.is_err() && kept,
-            format!("carried {carried}, result {result:?}, kept {kept}"),
+            facts_travel && result.is_err() && kept,
+            format!("facts travel {facts_travel}, result {result:?}, kept {kept}"),
         ),
     ));
 
@@ -1316,10 +1339,7 @@ fn colour_refusal_checks() -> Checks {
     let third = shadow_module("c", 1, 2);
     let mut state = world.script_state().clone();
     state.carry_known(&entered, &third);
-    let kept_facts = state
-        .known
-        .values()
-        .any(|facts| facts.template == crate::inventory::own_template("shared_part", "a"));
+    let kept_facts = state.known.values().any(|facts| *facts == wanted);
     let before = state.clone();
     let mut out = seeded_out();
     let before_out = out.clone();
@@ -1331,6 +1351,133 @@ fn colour_refusal_checks() -> Checks {
         check(
             kept_facts && result.is_err() && kept,
             format!("kept_facts {kept_facts}, result {result:?}, kept {kept}"),
+        ),
+    ));
+
+    // The module entered by the second change holds the shared template of
+    // the fitted part's resref, with no module's own marking. The facts of
+    // the module the part was fitted in still answer, and the swap still
+    // refuses.
+    let first = shadow_module("a", 3, 3);
+    let middle = shadow_module("b", 1, 0);
+    let third = plain_shared_module(0);
+    let mut world = colour_world(first.clone());
+    let saber = give_with(&mut world, &first, "slot_saber", PARTY, None);
+    let mut state = world.script_state().clone();
+    let mut held = state.items.get_mut(&saber).expect("slot_saber");
+    held.fitted = vec![String::new(), "shared_part".into()];
+    drop(held);
+    state.carry_known(&first, &middle);
+    state.carry_known(&middle, &third);
+    let described: Vec<u8> = state
+        .known
+        .values()
+        .filter(|facts| facts.template == crate::inventory::own_template("shared_part", "a"))
+        .map(|facts| facts.upgrade_level)
+        .collect();
+    let new = state
+        .make_item(&third, "new_crystal", PARTY, 1, None)
+        .map_or(0, |id| id.0);
+    world.set_script_state(state.clone());
+    let before = state.clone();
+    let mut out = seeded_out();
+    let before_out = out.clone();
+    let result = state.fit(&third, &mut out, saber, new, None);
+    let kept = state == before && out_same(&out, &before_out);
+    world.set_script_state(state);
+    checks.push((
+        "the facts of the module a part was fitted in answer against a later shared template",
+        check(
+            described == vec![3] && result.is_err() && kept,
+            format!("described {described:?}, result {result:?}, kept {kept}"),
+        ),
+    ));
+
+    // The same two module changes, but every description of the fitted part
+    // allows the swap: it was fitted in a module whose own template of its
+    // resref asked level 1, the module entered reads that resref at level 0,
+    // and the new hilt takes level 1. The descriptions still differ, so the
+    // part's origin is not recoverable, but each of them licenses the swap,
+    // so the loadout the player can see is the one they get.
+    let left = shadow_module("a", 1, 1);
+    let entered = shadow_module("b", 1, 0);
+    let mut world = colour_world(left.clone());
+    let saber = give_with(&mut world, &left, "slot_saber", PARTY, None);
+    let mut state = world.script_state().clone();
+    let mut held = state.items.get_mut(&saber).expect("slot_saber");
+    held.fitted = vec![String::new(), "shared_part".into()];
+    drop(held);
+    state.carry_known(&left, &entered);
+    let new = state
+        .make_item(&entered, "new_crystal", PARTY, 1, None)
+        .map_or(0, |id| id.0);
+    world.set_script_state(state);
+    let next = world.script_state().next_item;
+    let before = world.script_state().clone();
+    let mut out = seeded_out();
+    let before_out = out.clone();
+    let mut state = world.script_state().clone();
+    let result = state.fit(&entered, &mut out, saber, new, None);
+    world.set_script_state(state);
+    let expected = vec![
+        carried(
+            saber,
+            "slot_saber_red",
+            1,
+            0,
+            vec![String::new(), "shared_part".to_string()],
+        ),
+        carried(
+            crate::inventory::FIRST_ITEM + next,
+            "old_crystal",
+            1,
+            0,
+            Vec::new(),
+        ),
+    ];
+    let goods = party_goods(&world);
+    let exact = goods == expected
+        && world.script_state().next_item == next + 1
+        && out_same(&out, &before_out)
+        && count(&world, "new_crystal") == 0
+        && items_in_play(&world) == 2
+        && the_rest_unchanged(&before, world.script_state());
+    checks.push((
+        "a colour swap goes ahead when every description of the fitted part allows it",
+        check(
+            result.is_ok() && exact,
+            format!("result {result:?}, goods {goods:?}"),
+        ),
+    ));
+
+    // The other direction of the same disagreement: the module entered reads
+    // the fitted resref at a higher level than the module the part was
+    // fitted in did, and the new hilt takes less than that. The engine
+    // cannot tell which reading describes the part in hand, so it refuses.
+    let left = shadow_module("a", 1, 0);
+    let entered = shadow_module("b", 1, 3);
+    let mut world = colour_world(left.clone());
+    let saber = give_with(&mut world, &left, "slot_saber", PARTY, None);
+    let mut state = world.script_state().clone();
+    let mut held = state.items.get_mut(&saber).expect("slot_saber");
+    held.fitted = vec![String::new(), "shared_part".into()];
+    drop(held);
+    state.carry_known(&left, &entered);
+    let new = state
+        .make_item(&entered, "new_crystal", PARTY, 1, None)
+        .map_or(0, |id| id.0);
+    world.set_script_state(state.clone());
+    let before = state.clone();
+    let mut out = seeded_out();
+    let before_out = out.clone();
+    let result = state.fit(&entered, &mut out, saber, new, None);
+    let kept = state == before && out_same(&out, &before_out);
+    world.set_script_state(state);
+    checks.push((
+        "a colour swap refuses when the module entered reads the fitted part higher than the new hilt",
+        check(
+            result.is_err() && kept,
+            format!("result {result:?}, kept {kept}"),
         ),
     ));
     checks
