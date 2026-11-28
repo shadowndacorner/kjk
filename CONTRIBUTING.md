@@ -64,6 +64,85 @@ opening a pull request you agree to license your change under it.
 
 ## Branches and pull requests
 
+The following branch policy applies to the fork `shadowndacorner/kjk`.
+The upstream repository is `kjk-engine/kjk`. Its own contribution
+instructions still apply to pull requests opened there.
+
+### Long-lived branches in the fork
+
+| Branch | Purpose | Allowed changes |
+| --- | --- | --- |
+| `main` | Exact mirror of upstream `main` | Verified fast-forwards from upstream only. Never merge a fork PR here. |
+| `develop` | Integration of generally useful improvements | Reviewed, upstream-compatible fixes, features and tests. The fork's workflow instructions are the only administrative exception and must stay out of upstream PRs. |
+| `custom` | The fork's customized playable distribution | Reviewed fork-specific features, tuning, delivery tooling, and everything integrated into develop. |
+
+The normal flow of changes is `upstream/main` → `main` → `develop` →
+`custom`. The maintainer or authorized coordinator performs these syncs.
+Check the exact tips and ancestry before moving a ref. If upstream
+rewrites its history or a fast-forward is not possible, stop and request
+a decision. Do not force-push a long-lived branch. Merge the upstream
+mirror into develop, and develop into custom, when necessary to preserve
+already published history. Never merge custom wholesale into develop
+or develop wholesale into main. Use reviewed integration PRs when a
+non-fast-forward merge is required.
+
+### Feature branches
+
+- For a self-contained upstream candidate, start `fix/<topic>` or
+  `feat/<topic>` from the current fork main. Open the internal PR
+  against develop. Keep the feature head free of unrelated develop
+  commits, fork workflow instructions, custom changes and release policy.
+  Submit the isolated branch to upstream main once qualified and approved.
+- If a generally useful feature depends on unmerged develop work, start
+  from develop and target develop. Record the dependency. Before
+  submitting upstream, create a new clean branch from current main and
+  port only the intended changes, or wait for prerequisites to land upstream.
+  Requalify the exact upstream candidate.
+- Start fork-only work from custom, name the branch `fork/<topic>`, and
+  target custom. Examples are optional gameplay changes, balance defaults,
+  and the device updater. Git cannot have both a branch called custom and
+  branches called custom/<topic>.
+- If a custom feature becomes useful upstream, extract its reusable part
+  onto a new clean main-based branch. Do not merge the custom branch back.
+- Use separate worktrees and record the base commit, target, dependency
+  order and evidence for each PR. Do not rewrite a shared or published
+  branch. Create a replacement branch when necessary; retain the original
+  until its work and evidence have been reconciled.
+- After an upstream squash merge, sync main into develop and custom in
+  order. Check the patch equivalence and resulting tree, resolving only
+  residual differences. Never reapply an already accepted change merely
+  because its commit SHA differs.
+- All features need the existing review and qualification gates. This
+  policy does not authorize agents to merge, publish or bypass gates.
+
+### Builds and releases
+
+The delivery implementation is tracked in fork issue #66 and PR #71.
+These are target contracts, not claims that the CI or updater has been
+implemented or qualified on this baseline.
+
+| Source | Channel and tag policy |
+| --- | --- |
+| `main` | Verify the upstream baseline. The upstream channel uses upstream's own published releases; do not create fork stable tags on main. |
+| `develop` | General integration prereleases, `kjk-dev-*`. |
+| `custom` | Customized development prereleases, `kjk-custom-dev-*`. |
+| `release/<version>` cut from custom, or a qualified custom commit | Customized stable releases, `kjk-custom-vMAJOR.MINOR.PATCH`. |
+
+A release branch is optional and never merges into main or develop.
+Propagate generally useful fixes through a clean develop-targeted PR;
+reconcile custom-only release fixes into custom. Record the exact source
+branch, commit, channel and tag in every fork release manifest. A tag
+must resolve to the qualified source commit and have the correct source
+ancestry and explicit channel provenance. The tag name alone is not
+enough. Dev builds must never be Latest; stable promotion remains an
+owner decision. The updater should expose upstream, develop, custom
+development and custom stable channels, with custom stable the default
+for our distribution. Retain the existing native Rust requirement and
+all publication and actual-device qualification gates. All feature PRs
+must receive automated build and regression checks.
+
+### Upstream repository contributions
+
 - Never commit to `main`. Work on a branch named `<you>/<topic>`, ideally
   in its own git worktree (`docs/BUILD.md` on seeding its `target/`).
 - Open a pull request against `main`. CI runs two jobs: **tests**
