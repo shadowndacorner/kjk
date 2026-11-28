@@ -3,6 +3,21 @@
 Workflow, journal and glossary: `CONTEXT.md`. Goals, principles and
 decisions: `ROADMAP.md`. Do not touch other agents' `context/mrs/*` without being asked.
 
+## Working in the shadowndacorner fork
+
+Follow the fork branch policy in `CONTRIBUTING.md` and issue #105 before
+choosing a worktree or opening a pull request. `main` is an exact upstream
+mirror, `develop` integrates upstream-compatible work, and `custom` is the
+fork's playable customized distribution. Independent upstream candidates
+start from the mirrored main and target develop internally; dependent
+upstream-compatible changes start from develop. Fork-only changes start
+from custom on `fork/<topic>` branches and target custom. Never open a
+fork integration PR against main or merge custom into develop. Keep
+workflow-only changes and unrelated fork commits out of upstream PRs.
+These rules do not change the review gates or the restrictions on agent
+pushes and merges below. If working on an upstream-clean feature branch,
+read the fork's policy from develop or issue #105 without importing it.
+
 ## What ships
 
 The runtime and the documentation needed to use and develop it. Not shipped:
