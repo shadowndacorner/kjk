@@ -14,12 +14,19 @@ on:
       - "crates/edit/**"
       - "crates/save_editor/**"
       - "crates/saves/**"
+      # The recovery accounting reads what `sim` puts in a save and reports
+      # it, and its permanent check lives in `approved_tests`, so a change
+      # to either can break it.
+      - "crates/sim/**"
+      - "crates/approved_tests/**"
       - ".github/workflows/editor.yml"
   pull_request:
     paths:
       - "crates/edit/**"
       - "crates/save_editor/**"
       - "crates/saves/**"
+      - "crates/sim/**"
+      - "crates/approved_tests/**"
       - ".github/workflows/editor.yml"
   workflow_dispatch:
 
@@ -56,5 +63,8 @@ jobs:
       - name: clippy
         run: cargo clippy -p edit -p save_editor --all-targets --all-features -- -D warnings
 
-      - name: save_edits
-        run: cargo test --release -p approved_tests --features editor --test approved save_edits
+      # The editor's own permanent checks: the save edits and the recovery
+      # accounting (REC-01). Both are named here, so a filter cannot quietly
+      # leave one out.
+      - name: editor checks
+        run: cargo test --release -p approved_tests --features editor --test approved -- save_edits recovery_inventory_accounting

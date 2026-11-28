@@ -51,6 +51,7 @@ pub fn all() -> Vec<Probe> {
 mod companions;
 mod head;
 mod party;
+pub mod recovery;
 mod sheets;
 
 const SABER: &str = "g_w_lghtsbr01";
