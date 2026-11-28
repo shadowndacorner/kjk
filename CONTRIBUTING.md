@@ -73,7 +73,7 @@ instructions still apply to pull requests opened there.
 | Branch | Purpose | Allowed changes |
 | --- | --- | --- |
 | `main` | Exact mirror of upstream `main` | Verified fast-forwards from upstream only. Never merge a fork PR here. |
-| `develop` | Integration of generally useful improvements | Reviewed, upstream-compatible fixes, features and tests. The fork's workflow instructions are the only administrative exception and must stay out of upstream PRs. |
+| `develop` | Integration of generally useful improvements | Reviewed, upstream-compatible fixes, features and tests. Fork workflow instructions and the minimal CI and release plumbing needed to build develop are scoped administrative exceptions and must stay out of upstream PRs. |
 | `custom` | The fork's customized playable distribution | Reviewed fork-specific features, tuning, delivery tooling, and everything integrated into develop. |
 
 The normal flow of changes is `upstream/main` → `main` → `develop` →
